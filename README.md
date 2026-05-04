@@ -3,6 +3,8 @@
 **FrankenPress must-use plugin** — platform-essential WordPress glue for the
 FrankenPress stack. Two components, both runtime-mandatory:
 
+**Documentation:** <https://docs.frankenpress.com/components/fp-mu-plugin>
+
 | Component | What it does |
 |---|---|
 | **S3UploadsBootstrap** | Configures [`humanmade/s3-uploads`](https://github.com/humanmade/S3-Uploads) from `FP_S3_*` env vars and **refuses media uploads** when S3 isn't fully configured (rather than silently falling back to ephemeral local disk in a containerized deploy). |
