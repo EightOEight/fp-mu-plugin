@@ -1,0 +1,13 @@
+parameters:
+    level: 6
+    paths:
+        - src
+    excludePaths:
+        - vendor
+    # WordPress globals/functions/constants we reference but PHPStan doesn't know about.
+    # Without WP installed during static analysis, these would otherwise be flagged.
+    bootstrapFiles: []
+    ignoreErrors:
+        - identifier: function.notFound
+        - identifier: class.notFound
+        - identifier: constant.notFound
