@@ -1,0 +1,14 @@
+parameters:
+    level: 6
+    paths:
+        - src
+    excludePaths:
+        - vendor
+    # WordPress globals/functions/constants we reference aren't autoloaded
+    # during static analysis. Without WP, those would otherwise be flagged.
+    # Allow unmatched patterns: not every component touches WP globals.
+    reportUnmatchedIgnoredErrors: false
+    ignoreErrors:
+        - identifier: function.notFound
+        - identifier: class.notFound
+        - identifier: constant.notFound

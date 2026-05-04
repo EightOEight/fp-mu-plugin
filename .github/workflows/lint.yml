@@ -1,0 +1,38 @@
+name: lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer:v2
+          extensions: redis, mbstring, xml
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: PHPCS
+        run: composer lint
+
+      - name: PHPStan
+        run: composer stan
+
+      - name: PHPUnit
+        run: composer test
+
+      - name: composer audit
+        run: composer audit --abandoned=fail

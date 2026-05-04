@@ -4,7 +4,13 @@
 .env.local
 node_modules/
 vendor/
+composer.lock
 .phpunit.cache/
 .phpunit.result.cache
 build/
 dist/
+
+# composer/installers extracts WP plugins here when running `composer install`
+# locally — useful for dev but never committed.
+wp-content/
+web/

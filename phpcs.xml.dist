@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<ruleset name="fp-mu-plugin">
+    <description>Coding standards for fp-mu-plugin.</description>
+
+    <file>src</file>
+    <file>tests</file>
+    <file>fp-mu-plugin.php</file>
+
+    <arg name="extensions" value="php"/>
+    <arg name="colors"/>
+    <arg value="ps"/>
+
+    <rule ref="WordPress-Core">
+        <!-- Strict types declaration is fine in modern PHP. -->
+        <exclude name="PSR12.Files.OpenTag.NotAlone"/>
+        <!-- We use namespaces, not WP-style file naming. -->
+        <exclude name="WordPress.Files.FileName"/>
+        <!-- Yoda is a stylistic preference; our rule of thumb is "readable comparison". -->
+        <exclude name="WordPress.PHP.YodaConditions"/>
+    </rule>
+
+    <rule ref="WordPress.WP.I18n">
+        <properties>
+            <property name="text_domain" type="array">
+                <element value="fp-mu-plugin"/>
+            </property>
+        </properties>
+    </rule>
+
+    <config name="testVersion" value="8.2-"/>
+</ruleset>
