@@ -112,4 +112,36 @@ final class S3UploadsBootstrapTest extends TestCase {
 		$this->assertSame( 'secret', constant( 'S3_UPLOADS_SECRET' ) );
 		$this->assertSame( 'eu-west-1', constant( 'S3_UPLOADS_REGION' ) );
 	}
+
+	public function test_endpoint_filter_overrides_aws_sdk_params(): void {
+		// Test the filter shape directly. We can't easily test that bootstrap
+		// registers the filter (that requires a running WP), but we can
+		// verify the closure produces the right params.
+		if ( ! defined( 'S3_UPLOADS_ENDPOINT' ) ) {
+			define( 'S3_UPLOADS_ENDPOINT', 'http://minio:9000' );
+		}
+
+		$ref       = new \ReflectionClass( S3UploadsBootstrap::class );
+		$bootstrap = $ref->newInstanceWithoutConstructor();
+		$method    = new ReflectionMethod( $bootstrap, 'register_endpoint_filter' );
+		$method->setAccessible( true );
+
+		$captured = null;
+		Filters\expectAdded( 's3_uploads_s3_client_params' )
+			->once()
+			->whenHappen(
+				static function ( $callback ) use ( &$captured ): void {
+					$captured = $callback;
+				}
+			);
+
+		$method->invoke( $bootstrap );
+
+		$this->assertIsCallable( $captured );
+		$result = $captured( array( 'version' => 'latest' ) );
+
+		$this->assertSame( 'http://minio:9000', $result['endpoint'] );
+		$this->assertTrue( $result['use_path_style_endpoint'] );
+		$this->assertSame( 'latest', $result['version'] );
+	}
 }

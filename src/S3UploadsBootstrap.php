@@ -93,12 +93,37 @@ final class S3UploadsBootstrap {
 			define( 'WP_CONTENT_URL', rtrim( (string) constant( 'S3_UPLOADS_BUCKET_URL' ), '/' ) . '/wp-content' );
 		}
 
+		// humanmade/s3-uploads documents `S3_UPLOADS_ENDPOINT` but doesn't
+		// actually apply it to the AWS SDK on its own — you have to register
+		// the `s3_uploads_s3_client_params` filter. Without this, MinIO / R2
+		// / GCS-XML / any non-AWS endpoint still hits s3.amazonaws.com.
+		if ( defined( 'S3_UPLOADS_ENDPOINT' ) && '' !== (string) constant( 'S3_UPLOADS_ENDPOINT' ) ) {
+			$this->register_endpoint_filter();
+		}
+
 		$this->s3_uploads_loaded = $this->load_s3_uploads();
 		if ( ! $this->s3_uploads_loaded ) {
 			$this->refuse_uploads(
 				'humanmade/s3-uploads is not installed. Run `composer require humanmade/s3-uploads`.'
 			);
 		}
+	}
+
+	/**
+	 * Register the s3-uploads filter that applies S3_UPLOADS_ENDPOINT to
+	 * the AWS SDK client params. Path-style addressing is forced because
+	 * MinIO and most S3-compatible services don't support the
+	 * `<bucket>.<endpoint>` virtual-host pattern that AWS uses.
+	 */
+	private function register_endpoint_filter(): void {
+		add_filter(
+			's3_uploads_s3_client_params',
+			static function ( array $params ): array {
+				$params['endpoint']                = (string) constant( 'S3_UPLOADS_ENDPOINT' );
+				$params['use_path_style_endpoint'] = true;
+				return $params;
+			}
+		);
 	}
 
 	public function s3_uploads_loaded(): bool {
