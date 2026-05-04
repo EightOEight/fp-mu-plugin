@@ -66,10 +66,10 @@ final class SouinInvalidatorTest extends TestCase {
 					'IDX_GET-http-localhost:8080-/post/42',
 				)
 			)
-			->andReturn( 0 );
+			->andReturn( 7 );
 
 		$invalidator = new SouinInvalidator( $redis );
-		$invalidator->invalidate_url( 'http://localhost:8080/post/42' );
+		$this->assertSame( 7, $invalidator->invalidate_url( 'http://localhost:8080/post/42' ) );
 	}
 
 	public function test_invalidate_url_includes_query_string(): void {
@@ -82,10 +82,10 @@ final class SouinInvalidatorTest extends TestCase {
 					'IDX_GET-https-example.com-/search?q=foo',
 				)
 			)
-			->andReturn( 0 );
+			->andReturn( 1 );
 
 		$invalidator = new SouinInvalidator( $redis );
-		$invalidator->invalidate_url( 'https://example.com/search?q=foo' );
+		$this->assertSame( 1, $invalidator->invalidate_url( 'https://example.com/search?q=foo' ) );
 	}
 
 	public function test_invalidate_url_returns_zero_for_invalid_url(): void {

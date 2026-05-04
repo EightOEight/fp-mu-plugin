@@ -228,13 +228,12 @@ final class SouinInvalidator {
 	}
 
 	/**
-	 * Hook callback: comment created against a post.
+	 * Hook callback: comment created against a post. Bust the parent post's cache.
 	 *
-	 * @param int $comment_id   Comment ID (unused, but part of the WP hook signature).
-	 * @param int $approved     1 if approved, 0 if held, 'spam' if spam.
+	 * @param int $comment_id Comment ID.
+	 * @param int $approved   1 if approved, 0 if held, 'spam' if spam.
 	 */
 	public function on_comment_post( int $comment_id, $approved ): void {
-		unset( $comment_id );
 		if ( 1 !== (int) $approved ) {
 			return;
 		}
@@ -247,18 +246,17 @@ final class SouinInvalidator {
 
 	/**
 	 * Hook callback: comment status transitioned (approved, unapproved, spam, trash).
+	 * Any visibility change affects the parent post's cached state.
 	 *
-	 * @param string $new_status New status.
-	 * @param string $old_status Old status.
+	 * @param string $new_status New status (unused — any change busts the cache).
+	 * @param string $old_status Old status (unused).
 	 * @param object $comment    WP_Comment object.
 	 */
 	public function on_comment_status( string $new_status, string $old_status, $comment ): void {
-		unset( $old_status );
+		unset( $new_status, $old_status );
 		if ( ! is_object( $comment ) || empty( $comment->comment_post_ID ) ) {
 			return;
 		}
-		// Any visibility change affects the post page's cached state.
-		unset( $new_status );
 		$this->on_save_post( (int) $comment->comment_post_ID );
 	}
 
@@ -305,11 +303,16 @@ final class SouinInvalidator {
 			return null;
 		}
 
-		$host     = (string) ( getenv( 'FP_SOUIN_REDIS_HOST' ) ?: 'redis' );
-		$port     = (int) ( getenv( 'FP_SOUIN_REDIS_PORT' ) ?: 6379 );
+		$host_env    = getenv( 'FP_SOUIN_REDIS_HOST' );
+		$port_env    = getenv( 'FP_SOUIN_REDIS_PORT' );
+		$db_env      = getenv( 'FP_SOUIN_REDIS_DB' );
+		$timeout_env = getenv( 'FP_SOUIN_REDIS_TIMEOUT' );
+
+		$host     = ( false === $host_env || '' === $host_env ) ? 'redis' : (string) $host_env;
+		$port     = ( false === $port_env || '' === $port_env ) ? 6379 : (int) $port_env;
 		$password = (string) getenv( 'FP_SOUIN_REDIS_PASSWORD' );
-		$db       = (int) ( getenv( 'FP_SOUIN_REDIS_DB' ) ?: 0 );
-		$timeout  = (float) ( getenv( 'FP_SOUIN_REDIS_TIMEOUT' ) ?: 1.0 );
+		$db       = ( false === $db_env || '' === $db_env ) ? 0 : (int) $db_env;
+		$timeout  = ( false === $timeout_env || '' === $timeout_env ) ? 1.0 : (float) $timeout_env;
 
 		try {
 			$client = new \Redis();

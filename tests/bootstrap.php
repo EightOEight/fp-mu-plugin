@@ -14,3 +14,8 @@ require_once __DIR__ . '/../vendor/autoload.php';
 if ( ! defined( 'ABSPATH' ) ) {
 	define( 'ABSPATH', '/tmp/fake-abspath/' );
 }
+
+// Silence error_log() output during tests — components log connection
+// errors and refused-uploads warnings as part of their happy path, but
+// in a unit-test runner that just creates noise.
+ini_set( 'error_log', '/dev/null' );
