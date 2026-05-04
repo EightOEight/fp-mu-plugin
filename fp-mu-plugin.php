@@ -38,11 +38,11 @@ if ( ! class_exists( \FrankenPress\MuPlugin::class ) ) {
 	$fp_src = is_dir( $fp_mu_plugin_dir . '/src' ) ? $fp_mu_plugin_dir . '/src' : __DIR__ . '/src';
 	if ( is_dir( $fp_src ) ) {
 		spl_autoload_register(
-			static function ( string $class ) use ( $fp_src ): void {
-				if ( strpos( $class, 'FrankenPress\\' ) !== 0 ) {
+			static function ( string $class_name ) use ( $fp_src ): void {
+				if ( strpos( $class_name, 'FrankenPress\\' ) !== 0 ) {
 					return;
 				}
-				$relative = str_replace( '\\', '/', substr( $class, strlen( 'FrankenPress\\' ) ) );
+				$relative = str_replace( '\\', '/', substr( $class_name, strlen( 'FrankenPress\\' ) ) );
 				$path     = $fp_src . '/' . $relative . '.php';
 				if ( is_file( $path ) ) {
 					require_once $path;
