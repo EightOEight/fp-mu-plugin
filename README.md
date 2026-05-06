@@ -68,11 +68,22 @@ across replicas, which is far worse than a hard failure.
 | `FP_SOUIN_REDIS_TIMEOUT` | `1.0` | Connect timeout (seconds) |
 | `FP_SOUIN_DISABLED` | `false` | Truthy to no-op the invalidator (cache then expires only by TTL) |
 
-The invalidator hooks `save_post`, `deleted_post`, `clean_post_cache`,
-`comment_post`, `transition_comment_status`, `switch_theme`,
-`permalink_structure_changed`, and `updated_option` (for global options
-like `blogname`, `permalink_structure`). On any of these, it `DEL`s the
-matching Souin Redis keys.
+The invalidator covers every WP write event whose output is templated
+into cached pages. The list is grouped by blast radius:
+
+| Category | Hooks | Action |
+|---|---|---|
+| Post save / delete | `save_post`, `wp_trash_post`, `before_delete_post`, `deleted_post`, `clean_post_cache` | DEL post URL + tag + home |
+| Global-impact post types | `save_post` for `wp_navigation` / `wp_block` / `wp_template` / `wp_template_part` / `wp_global_styles` | `invalidate_all` |
+| Comments | `comment_post`, `transition_comment_status` | DEL parent post |
+| Term lifecycle | `created_term`, `edited_term`, `delete_term` | `invalidate_all` (archive + every listing) |
+| User lifecycle | `profile_update`, `user_register`, `deleted_user` | DEL author archive + home |
+| Site-wide | `switch_theme`, `permalink_structure_changed`, `wp_update_nav_menu`, `customize_save_after`, `activated_plugin`, `deactivated_plugin` | `invalidate_all` |
+| Options | `updated_option` for `blogname`, `home`, `siteurl`, `permalink_structure`, `sidebars_widgets`, anything matching `widget_*` | `invalidate_all` |
+
+Heuristic: bounded change → invalidate_url (precise); unbounded change
+(anything templated into every page) → invalidate_all (blunt but
+correct). The TTL expiry is the safety net for anything missed.
 
 If `ext-redis` isn't loaded, or the connection fails, the invalidator
 becomes a silent no-op. **Errors are logged but never raised** — a broken
