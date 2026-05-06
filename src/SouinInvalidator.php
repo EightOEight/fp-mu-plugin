@@ -82,6 +82,15 @@ final class SouinInvalidator {
 		}
 
 		add_action( 'save_post', array( $this, 'on_save_post' ), 10, 1 );
+		// `wp_trash_post` and `before_delete_post` fire BEFORE WP changes
+		// the post's status / removes the row, so `get_permalink()` still
+		// returns the canonical published URL — the one Souin actually
+		// has in cache. By contrast, `deleted_post` (which fires AFTER
+		// the row is gone) returns false from get_permalink, so any
+		// invalidation hooked there silently no-ops. We keep it
+		// registered as a defence-in-depth safety net.
+		add_action( 'wp_trash_post', array( $this, 'on_save_post' ), 10, 1 );
+		add_action( 'before_delete_post', array( $this, 'on_save_post' ), 10, 1 );
 		add_action( 'deleted_post', array( $this, 'on_save_post' ), 10, 1 );
 		add_action( 'clean_post_cache', array( $this, 'on_save_post' ), 10, 1 );
 		add_action( 'comment_post', array( $this, 'on_comment_post' ), 10, 2 );
