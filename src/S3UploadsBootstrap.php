@@ -28,6 +28,16 @@
  *   FP_S3_ENDPOINT     (optional)  Custom S3-compatible endpoint (MinIO,
  *                                  R2, GCS XML API, etc.). Leave empty
  *                                  for AWS S3.
+ *   FP_S3_OBJECT_ACL   (optional)  S3 object ACL applied on PUT
+ *                                  (`public-read`, `private`,
+ *                                  `authenticated-read`). Leave unset
+ *                                  / empty to send no ACL header at
+ *                                  all — required for buckets with
+ *                                  Object Ownership = "Bucket owner
+ *                                  enforced" (the AWS default since
+ *                                  April 2023). Sending an ACL on such
+ *                                  a bucket aborts the upload mid-PUT
+ *                                  and leaves a 0-byte object behind.
  *   FP_S3_DISABLED     (optional)  Truthy to disable the bootstrap and
  *                                  fall back to whatever upload handler
  *                                  WP would use (i.e. local disk).
@@ -49,6 +59,7 @@ final class S3UploadsBootstrap {
 		'FP_S3_REGION'     => 'S3_UPLOADS_REGION',
 		'FP_S3_BUCKET_URL' => 'S3_UPLOADS_BUCKET_URL',
 		'FP_S3_ENDPOINT'   => 'S3_UPLOADS_ENDPOINT',
+		'FP_S3_OBJECT_ACL' => 'S3_UPLOADS_OBJECT_ACL',
 	);
 
 	private const REQUIRED_KEYS = array( 'S3_UPLOADS_BUCKET', 'S3_UPLOADS_KEY', 'S3_UPLOADS_SECRET' );
@@ -86,6 +97,8 @@ final class S3UploadsBootstrap {
 			define( 'S3_UPLOADS_REGION', 'us-east-1' );
 		}
 
+		$this->apply_object_acl_default();
+
 		// Coordinate WP_CONTENT_URL with the bucket public URL (or CDN) so
 		// emitted asset URLs use the public path even before s3-uploads
 		// rewrites them. Optional — site can override.
@@ -106,6 +119,28 @@ final class S3UploadsBootstrap {
 			$this->refuse_uploads(
 				'humanmade/s3-uploads is not installed. Run `composer require humanmade/s3-uploads`.'
 			);
+		}
+	}
+
+	/**
+	 * Default `S3_UPLOADS_OBJECT_ACL` to null when the consumer hasn't
+	 * set FP_S3_OBJECT_ACL.
+	 *
+	 * Modern S3 buckets default to Object Ownership = "Bucket owner
+	 * enforced" (ACLs disabled — the AWS default since April 2023).
+	 * humanmade/s3-uploads' default ACL is `public-read`; sending it on
+	 * a bucket-owner-enforced bucket aborts the upload mid-PUT and
+	 * leaves a 0-byte object behind. Defining the constant as null
+	 * makes humanmade/s3-uploads pass null to the AWS SDK stream
+	 * context, which omits the ACL header entirely.
+	 *
+	 * Set FP_S3_OBJECT_ACL=public-read (or `private` /
+	 * `authenticated-read`) to opt in for buckets that still have ACLs
+	 * enabled.
+	 */
+	private function apply_object_acl_default(): void {
+		if ( ! defined( 'S3_UPLOADS_OBJECT_ACL' ) ) {
+			define( 'S3_UPLOADS_OBJECT_ACL', null );
 		}
 	}
 
