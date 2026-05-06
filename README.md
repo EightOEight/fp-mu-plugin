@@ -48,6 +48,7 @@ All env vars are optional unless flagged required.
 | `FP_S3_REGION` | `us-east-1` | S3 region |
 | `FP_S3_BUCKET_URL` | (optional) | Public CDN URL for served media (e.g. `https://cdn.example.com`). Auto-sets `WP_CONTENT_URL` if undefined. |
 | `FP_S3_ENDPOINT` | (optional) | Custom S3-compatible endpoint (MinIO, R2, GCS XML API). Empty for AWS S3. |
+| `FP_S3_OBJECT_ACL` | (empty — no ACL header sent) | Optional S3 object ACL (`public-read`, `private`, `authenticated-read`). Leave unset for buckets with **Object Ownership = "Bucket owner enforced"** (the AWS default for new buckets since April 2023, ACLs disabled). Sending an ACL on such a bucket aborts the upload and leaves a **0-byte object** behind. Set to `public-read` to opt in for ACL-enabled buckets. |
 | `FP_S3_DISABLED` | `false` | Set truthy (`1`, `true`, `yes`, `on`) to disable S3 entirely. **Local dev only — never in production**, because container disks are ephemeral and inconsistent across replicas. |
 
 If any required var is missing, the bootstrap registers a

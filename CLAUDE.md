@@ -14,7 +14,7 @@ regular plugin (or a fork of this).
 | `FrankenPress\SouinInvalidator` | Connects directly to Redis and `DEL`s Souin's HTTP cache entries on `save_post`, `clean_post_cache`, comment status changes, theme switch, permalink change, global-option change. Bypasses cache-handler v0.16.0's broken HTTP invalidation APIs. |
 
 Composer name: **`eightoeight/fp-mu-plugin`** (PSR-4 namespace `FrankenPress\\`).
-Latest: `v0.1.1`.
+Latest: `v0.2.0`.
 
 Public docs: **<https://docs.frankenpress.com/components/fp-mu-plugin>**
 

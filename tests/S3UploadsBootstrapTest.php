@@ -24,7 +24,7 @@ final class S3UploadsBootstrapTest extends TestCase {
 		parent::setUp();
 		Monkey\setUp();
 		// Snapshot then clear all FP_S3_* env vars for test isolation.
-		foreach ( array( 'FP_S3_BUCKET', 'FP_S3_KEY', 'FP_S3_SECRET', 'FP_S3_REGION', 'FP_S3_BUCKET_URL', 'FP_S3_ENDPOINT', 'FP_S3_DISABLED' ) as $key ) {
+		foreach ( array( 'FP_S3_BUCKET', 'FP_S3_KEY', 'FP_S3_SECRET', 'FP_S3_REGION', 'FP_S3_BUCKET_URL', 'FP_S3_ENDPOINT', 'FP_S3_OBJECT_ACL', 'FP_S3_DISABLED' ) as $key ) {
 			$value = getenv( $key );
 			if ( false !== $value ) {
 				$this->env_backup[ $key ] = $value;
@@ -34,7 +34,7 @@ final class S3UploadsBootstrapTest extends TestCase {
 	}
 
 	protected function tearDown(): void {
-		foreach ( array_keys( array_flip( array( 'FP_S3_BUCKET', 'FP_S3_KEY', 'FP_S3_SECRET', 'FP_S3_REGION', 'FP_S3_BUCKET_URL', 'FP_S3_ENDPOINT', 'FP_S3_DISABLED' ) ) ) as $key ) {
+		foreach ( array_keys( array_flip( array( 'FP_S3_BUCKET', 'FP_S3_KEY', 'FP_S3_SECRET', 'FP_S3_REGION', 'FP_S3_BUCKET_URL', 'FP_S3_ENDPOINT', 'FP_S3_OBJECT_ACL', 'FP_S3_DISABLED' ) ) ) as $key ) {
 			if ( isset( $this->env_backup[ $key ] ) ) {
 				putenv( $key . '=' . $this->env_backup[ $key ] );
 			} else {
@@ -111,6 +111,37 @@ final class S3UploadsBootstrapTest extends TestCase {
 		$this->assertSame( 'AKIAFAKE', constant( 'S3_UPLOADS_KEY' ) );
 		$this->assertSame( 'secret', constant( 'S3_UPLOADS_SECRET' ) );
 		$this->assertSame( 'eu-west-1', constant( 'S3_UPLOADS_REGION' ) );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_object_acl_env_maps_to_constant(): void {
+		putenv( 'FP_S3_OBJECT_ACL=public-read' );
+
+		$bootstrap = new S3UploadsBootstrap();
+		$method    = new ReflectionMethod( $bootstrap, 'define_constants_from_env' );
+		$method->invoke( $bootstrap );
+
+		$this->assertSame( 'public-read', constant( 'S3_UPLOADS_OBJECT_ACL' ) );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_object_acl_defaults_to_null_when_env_unset(): void {
+		// FP_S3_OBJECT_ACL is unset (cleared in setUp). The fresh
+		// process means S3_UPLOADS_OBJECT_ACL is also undefined yet.
+		putenv( 'FP_S3_OBJECT_ACL' );
+
+		$bootstrap = new S3UploadsBootstrap();
+		$method    = new ReflectionMethod( $bootstrap, 'apply_object_acl_default' );
+		$method->invoke( $bootstrap );
+
+		$this->assertTrue( defined( 'S3_UPLOADS_OBJECT_ACL' ) );
+		$this->assertNull( constant( 'S3_UPLOADS_OBJECT_ACL' ) );
 	}
 
 	public function test_endpoint_filter_overrides_aws_sdk_params(): void {
