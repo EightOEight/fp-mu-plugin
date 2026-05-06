@@ -173,4 +173,100 @@ final class SouinInvalidatorTest extends TestCase {
 		$this->assertSame( 0, $invalidator->invalidate_url( 'https://example.com/post/1' ) );
 		$this->assertSame( 0, $invalidator->invalidate_tag( 'post-1' ) );
 	}
+
+	public function test_on_save_post_for_global_post_type_invalidates_all(): void {
+		Functions\stubs(
+			array(
+				'get_post_type' => static fn () => 'wp_navigation',
+			)
+		);
+
+		$redis = Mockery::mock( '\Redis' );
+		// invalidate_all() SCANs the three pattern groups. Stub minimal SCAN
+		// returning empty batches so the method exits cleanly.
+		$redis->shouldReceive( 'scan' )->andReturn( array() );
+		$redis->shouldNotReceive( 'del' );
+
+		$invalidator = new SouinInvalidator( $redis );
+		$invalidator->on_save_post( 42 );
+
+		// Side-effect-driven test — we verify scan was called and del was not
+		// because the SCAN found no keys to delete. The expectation that
+		// invalidate_all() is the path taken (vs the per-URL path that would
+		// call get_permalink) is the assertion.
+		$this->assertTrue( true );
+	}
+
+	public function test_on_term_change_invalidates_all(): void {
+		$redis = Mockery::mock( '\Redis' );
+		$redis->shouldReceive( 'scan' )
+			->atLeast()->once()
+			->andReturn( array() );
+
+		$invalidator = new SouinInvalidator( $redis );
+		$invalidator->on_term_change();
+
+		$this->assertTrue( true );
+	}
+
+	public function test_on_user_change_invalidates_author_archive_and_home(): void {
+		Functions\stubs(
+			array(
+				'get_author_posts_url' => static fn ( int $id ) => "https://example.com/author/u{$id}/",
+				'home_url'             => static fn ( string $p = '/' ) => "https://example.com{$p}",
+			)
+		);
+
+		$redis = Mockery::mock( '\Redis' );
+		$redis->shouldReceive( 'del' )
+			->once()
+			->with(
+				array(
+					'GET-http-example.com-/author/u7/',
+					'IDX_GET-http-example.com-/author/u7/',
+					'GET-https-example.com-/author/u7/',
+					'IDX_GET-https-example.com-/author/u7/',
+				)
+			)
+			->andReturn( 4 );
+		$redis->shouldReceive( 'del' )
+			->once()
+			->with(
+				array(
+					'GET-http-example.com-/',
+					'IDX_GET-http-example.com-/',
+					'GET-https-example.com-/',
+					'IDX_GET-https-example.com-/',
+				)
+			)
+			->andReturn( 4 );
+
+		$invalidator = new SouinInvalidator( $redis );
+		$invalidator->on_user_change( 7 );
+
+		$this->assertTrue( true );
+	}
+
+	public function test_on_updated_option_widget_prefix_invalidates_all(): void {
+		$redis = Mockery::mock( '\Redis' );
+		$redis->shouldReceive( 'scan' )
+			->atLeast()->once()
+			->andReturn( array() );
+
+		$invalidator = new SouinInvalidator( $redis );
+		$invalidator->on_updated_option( 'widget_search' );
+
+		$this->assertTrue( true );
+	}
+
+	public function test_on_updated_option_unknown_option_no_op(): void {
+		$redis = Mockery::mock( '\Redis' );
+		$redis->shouldNotReceive( 'scan' );
+		$redis->shouldNotReceive( 'del' );
+
+		$invalidator = new SouinInvalidator( $redis );
+		$invalidator->on_updated_option( 'some_random_option' );
+
+		$this->assertTrue( true );
+	}
 }

@@ -81,22 +81,44 @@ final class SouinInvalidator {
 			return;
 		}
 
+		// Post lifecycle. wp_trash_post and before_delete_post fire BEFORE
+		// WP changes the post's status / removes the row, so get_permalink()
+		// still returns the canonical published URL — the one Souin has
+		// cached. deleted_post fires AFTER the row is gone (get_permalink
+		// returns false there) and stays as a defence-in-depth safety net.
 		add_action( 'save_post', array( $this, 'on_save_post' ), 10, 1 );
-		// `wp_trash_post` and `before_delete_post` fire BEFORE WP changes
-		// the post's status / removes the row, so `get_permalink()` still
-		// returns the canonical published URL — the one Souin actually
-		// has in cache. By contrast, `deleted_post` (which fires AFTER
-		// the row is gone) returns false from get_permalink, so any
-		// invalidation hooked there silently no-ops. We keep it
-		// registered as a defence-in-depth safety net.
 		add_action( 'wp_trash_post', array( $this, 'on_save_post' ), 10, 1 );
 		add_action( 'before_delete_post', array( $this, 'on_save_post' ), 10, 1 );
 		add_action( 'deleted_post', array( $this, 'on_save_post' ), 10, 1 );
 		add_action( 'clean_post_cache', array( $this, 'on_save_post' ), 10, 1 );
+
+		// Comments — bust the parent post's cache.
 		add_action( 'comment_post', array( $this, 'on_comment_post' ), 10, 2 );
 		add_action( 'transition_comment_status', array( $this, 'on_comment_status' ), 10, 3 );
+
+		// Term lifecycle — archive page changes AND every post listing the
+		// term changes (sidebar widgets, related posts, "Filed under"
+		// bylines). Unbounded blast radius → flush everything.
+		add_action( 'created_term', array( $this, 'on_term_change' ), 10, 0 );
+		add_action( 'edited_term', array( $this, 'on_term_change' ), 10, 0 );
+		add_action( 'delete_term', array( $this, 'on_term_change' ), 10, 0 );
+
+		// User lifecycle — author archive + posts authored by the user.
+		add_action( 'profile_update', array( $this, 'on_user_change' ), 10, 1 );
+		add_action( 'user_register', array( $this, 'on_user_change' ), 10, 1 );
+		add_action( 'deleted_user', array( $this, 'on_user_change' ), 10, 1 );
+
+		// Site-wide changes — anything templated into every page (theme
+		// tokens, header/footer menus, block templates, plugins that
+		// register UI). Bounded invalidation gets messy fast; flush all.
 		add_action( 'switch_theme', array( $this, 'invalidate_all' ) );
 		add_action( 'permalink_structure_changed', array( $this, 'invalidate_all' ) );
+		add_action( 'wp_update_nav_menu', array( $this, 'invalidate_all' ) );
+		add_action( 'customize_save_after', array( $this, 'invalidate_all' ) );
+		add_action( 'activated_plugin', array( $this, 'invalidate_all' ) );
+		add_action( 'deactivated_plugin', array( $this, 'invalidate_all' ) );
+
+		// Catch-all for option writes with site-wide blast radius.
 		add_action( 'updated_option', array( $this, 'on_updated_option' ), 10, 1 );
 
 		$this->hooks_registered = true;
@@ -235,8 +257,30 @@ final class SouinInvalidator {
 
 	/**
 	 * Hook callback: invalidate the post URL + tag on save / delete / cache clear.
+	 *
+	 * Posts of certain "global-impact" types — wp_navigation, wp_block,
+	 * wp_template, wp_template_part, wp_global_styles — are referenced
+	 * by templates on every rendered page (the navigation block in the
+	 * site header, theme.json design tokens, reusable blocks, etc.).
+	 * Saving one of those is effectively a site-wide change, so we
+	 * `invalidate_all` rather than just the entity's own URL.
 	 */
 	public function on_save_post( int $post_id ): void {
+		if ( function_exists( 'get_post_type' ) ) {
+			$post_type = (string) get_post_type( $post_id );
+			$global    = array(
+				'wp_navigation',
+				'wp_block',
+				'wp_template',
+				'wp_template_part',
+				'wp_global_styles',
+			);
+			if ( in_array( $post_type, $global, true ) ) {
+				$this->invalidate_all();
+				return;
+			}
+		}
+
 		$permalink = get_permalink( $post_id );
 		if ( is_string( $permalink ) && '' !== $permalink ) {
 			$this->invalidate_url( $permalink );
@@ -244,6 +288,42 @@ final class SouinInvalidator {
 		$this->invalidate_tag( 'post-' . $post_id );
 
 		// Front pages, archives, feeds typically include the post — bust them.
+		$home = function_exists( 'home_url' ) ? home_url( '/' ) : '';
+		if ( '' !== $home ) {
+			$this->invalidate_url( $home );
+		}
+	}
+
+	/**
+	 * Hook callback: term created / edited / deleted.
+	 *
+	 * Term changes touch the term archive page AND every post listing
+	 * that references the term (sidebar widgets, "filed under" bylines,
+	 * related-posts blocks, REST taxonomy responses). The blast radius
+	 * is large and hard to enumerate cheaply, so flush everything.
+	 */
+	public function on_term_change(): void {
+		$this->invalidate_all();
+	}
+
+	/**
+	 * Hook callback: user profile changed / created / deleted.
+	 *
+	 * Bounded best-effort: invalidate the user's author archive plus
+	 * the home page. Posts authored by the user still carry the author
+	 * byline and would technically be stale until their own TTL
+	 * expires; we don't enumerate every authored post here because the
+	 * common case (display name change) is rare and per-post staleness
+	 * is acceptable for the common cache TTL window.
+	 */
+	public function on_user_change( int $user_id ): void {
+		if ( function_exists( 'get_author_posts_url' ) ) {
+			$author_url = get_author_posts_url( $user_id );
+			if ( is_string( $author_url ) && '' !== $author_url ) {
+				$this->invalidate_url( $author_url );
+			}
+		}
+
 		$home = function_exists( 'home_url' ) ? home_url( '/' ) : '';
 		if ( '' !== $home ) {
 			$this->invalidate_url( $home );
@@ -300,8 +380,16 @@ final class SouinInvalidator {
 			'date_format',
 			'time_format',
 			'permalink_structure',
+			'sidebars_widgets',
 		);
 		if ( in_array( $option, $global_options, true ) ) {
+			$this->invalidate_all();
+			return;
+		}
+
+		// Widget instance saves (`widget_<type>` keys) — sidebars/footers
+		// appear on every page, so any widget content change is site-wide.
+		if ( 0 === strpos( $option, 'widget_' ) ) {
 			$this->invalidate_all();
 		}
 	}
