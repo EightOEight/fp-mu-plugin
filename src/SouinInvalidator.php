@@ -104,6 +104,16 @@ final class SouinInvalidator {
 	 * `GET-https-example.com-/post/1`. We DEL that key plus its
 	 * `IDX_<key>` index entry.
 	 *
+	 * **Both http and https variants are DELed regardless of the URL's
+	 * scheme.** Souin keys with whatever scheme it observed for the
+	 * request, which depends on whether Caddy is configured to trust an
+	 * upstream proxy's `X-Forwarded-Proto` header. WordPress's
+	 * `home_url()` always returns the canonical scheme. The two can
+	 * drift in proxy chains (CDN → LB → Caddy), causing silent
+	 * invalidation misses where edits are saved to the DB but the
+	 * cache keeps serving the old HTML. Dual-scheme DEL is cheap and
+	 * removes that whole class of bugs.
+	 *
 	 * @return int Number of Redis keys deleted (0 if no-op or failure).
 	 */
 	public function invalidate_url( string $url ): int {
@@ -125,11 +135,15 @@ final class SouinInvalidator {
 			$path .= '?' . $parts['query'];
 		}
 
-		$body_key  = sprintf( 'GET-%s-%s-%s', $parts['scheme'], $host, $path );
-		$index_key = 'IDX_' . $body_key;
+		$keys = array();
+		foreach ( array( 'http', 'https' ) as $scheme ) {
+			$body_key = sprintf( 'GET-%s-%s-%s', $scheme, $host, $path );
+			$keys[]   = $body_key;
+			$keys[]   = 'IDX_' . $body_key;
+		}
 
 		try {
-			return (int) $this->redis->del( array( $body_key, $index_key ) );
+			return (int) $this->redis->del( $keys );
 		} catch ( Throwable $e ) {
 			$this->log_error( 'invalidate_url failed', $e );
 			return 0;
