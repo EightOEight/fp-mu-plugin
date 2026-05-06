@@ -89,7 +89,13 @@ IDX_GET-<scheme>-<host>-<path> index entry pointing at the body
 SURROGATE_<tag>                Redis SET of cache keys associated with a tag
 ```
 
-`invalidate_url($url)` DELs the body + index pair.
+`invalidate_url($url)` DELs the body + index pair for **both `http` and
+`https` scheme variants** of the URL. Souin keys with whatever scheme
+it observed for the request (which depends on whether Caddy is
+configured to trust an upstream proxy's `X-Forwarded-Proto` header),
+while WordPress's `home_url()` returns the canonical scheme. The two
+can drift in proxy chains (CDN → LB → Caddy), so dual-scheme DEL
+removes a class of silent invalidation misses.
 
 `invalidate_tag($tag)`:
 1. `SMEMBERS SURROGATE_<tag>` to enumerate cached entries under that tag

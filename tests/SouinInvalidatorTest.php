@@ -38,12 +38,14 @@ final class SouinInvalidatorTest extends TestCase {
 		parent::tearDown();
 	}
 
-	public function test_invalidate_url_emits_correct_souin_key_shape(): void {
+	public function test_invalidate_url_dels_both_http_and_https_variants(): void {
 		$redis = Mockery::mock( '\Redis' );
 		$redis->shouldReceive( 'del' )
 			->once()
 			->with(
 				array(
+					'GET-http-example.com-/post/1',
+					'IDX_GET-http-example.com-/post/1',
 					'GET-https-example.com-/post/1',
 					'IDX_GET-https-example.com-/post/1',
 				)
@@ -51,7 +53,10 @@ final class SouinInvalidatorTest extends TestCase {
 			->andReturn( 2 );
 
 		$invalidator = new SouinInvalidator( $redis );
-		$deleted     = $invalidator->invalidate_url( 'https://example.com/post/1' );
+		// Caller passes https; the invalidator DELs both schemes
+		// regardless. Defends against scheme drift between WP's
+		// home_url() and Souin's observed request scheme.
+		$deleted = $invalidator->invalidate_url( 'https://example.com/post/1' );
 
 		$this->assertSame( 2, $deleted );
 	}
@@ -64,6 +69,8 @@ final class SouinInvalidatorTest extends TestCase {
 				array(
 					'GET-http-localhost:8080-/post/42',
 					'IDX_GET-http-localhost:8080-/post/42',
+					'GET-https-localhost:8080-/post/42',
+					'IDX_GET-https-localhost:8080-/post/42',
 				)
 			)
 			->andReturn( 7 );
@@ -78,6 +85,8 @@ final class SouinInvalidatorTest extends TestCase {
 			->once()
 			->with(
 				array(
+					'GET-http-example.com-/search?q=foo',
+					'IDX_GET-http-example.com-/search?q=foo',
 					'GET-https-example.com-/search?q=foo',
 					'IDX_GET-https-example.com-/search?q=foo',
 				)
