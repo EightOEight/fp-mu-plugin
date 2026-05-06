@@ -1,7 +1,7 @@
 # fp-mu-plugin
 
 **FrankenPress must-use plugin** — platform-essential WordPress glue for the
-FrankenPress stack. Two components, both runtime-mandatory:
+FrankenPress stack. Three components, all platform-housekeeping:
 
 **Documentation:** <https://docs.frankenpress.com/components/fp-mu-plugin>
 
@@ -9,6 +9,7 @@ FrankenPress stack. Two components, both runtime-mandatory:
 |---|---|
 | **S3UploadsBootstrap** | Configures [`humanmade/s3-uploads`](https://github.com/humanmade/S3-Uploads) from `FP_S3_*` env vars and **refuses media uploads** when S3 isn't fully configured (rather than silently falling back to ephemeral local disk in a containerized deploy). |
 | **SouinInvalidator** | `DEL`s Souin's Redis cache entries directly on `save_post`, `clean_post_cache`, `switch_theme`, etc. — Souin's documented HTTP invalidation APIs are broken in cache-handler v0.16.0 (see [`fp-runtime/PHASE-0.md`](https://github.com/EightOEight/fp-runtime/blob/main/PHASE-0.md)). |
+| **SiteHealth** | Suppresses Site Health tests whose failure is intentional under the immutable-image lockdown (`background_updates`, FS-write probes, `plugin_theme_auto_updates`) and adds a passing FrankenPress test that explains why. |
 
 That's the entire mu-plugin. Anything else (object cache, multisite URL fixing,
 WooCommerce log handlers, Prometheus metrics) is **optional** by the FrankenPress
