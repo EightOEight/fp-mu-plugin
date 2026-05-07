@@ -1,6 +1,6 @@
 {
     "name": "eightoeight/fp-mu-plugin",
-    "description": "FrankenPress must-use plugin — platform-essential WordPress glue: humanmade/s3-uploads bootstrap (with safety guards) and Souin cache invalidator. Two components, both runtime-mandatory.",
+    "description": "FrankenPress must-use plugin — platform-essential WordPress glue: humanmade/s3-uploads bootstrap (with safety guards), Souin cache invalidator, Site Health adjustments for the immutable-image lockdown, and SMTP mailer for wp_mail. Four components, all platform-housekeeping.",
     "license": "Apache-2.0",
     "type": "wordpress-muplugin",
     "authors": [

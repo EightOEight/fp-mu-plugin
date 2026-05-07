@@ -2,8 +2,8 @@
 /**
  * Plugin Name:  FrankenPress mu-plugin
  * Plugin URI:   https://github.com/EightOEight/fp-mu-plugin
- * Description:  WordPress integrations for the FrankenPress stack: URL fixer (multisite), Souin cache invalidator, WooCommerce stderr logger.
- * Version:      0.1.1
+ * Description:  Platform-essential WordPress glue for the FrankenPress stack: S3-uploads bootstrap, Souin cache invalidator, Site Health adjustments for the immutable-image lockdown, and SMTP mailer for wp_mail.
+ * Version:      0.3.0
  * Author:       EightOEight
  * Author URI:   https://eightoeight.io
  * License:      Apache-2.0

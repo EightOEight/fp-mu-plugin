@@ -12,7 +12,7 @@ namespace FrankenPress;
 /**
  * Wires the platform-essential components into WordPress hooks.
  *
- * Three components, all platform-housekeeping for the FrankenPress
+ * Four components, all platform-housekeeping for the FrankenPress
  * model — anything beyond this is "optional" by the platform's
  * baseline definition:
  *
@@ -26,7 +26,11 @@ namespace FrankenPress;
  *   - {@see SiteHealth}: silence Site Health tests whose failure is
  *     intentional under the immutable-image lockdown
  *     (background_updates, FS-write probes, plugin/theme auto-update
- *     probe), and add a passing FrankenPress test that explains why.
+ *     probe), add a passing FrankenPress test that explains why, and
+ *     add an SMTP-reachability test when SMTPMailer is configured.
+ *   - {@see SMTPMailer}: wire the global PHPMailer to send via SMTP
+ *     when `FP_SMTP_HOST` is set. The fp-runtime image ships no MTA,
+ *     so without this every `wp_mail()` call silently fails.
  *
  * Each component's constructor is side-effect-free; the actual hook
  * registration happens in `bootstrap()`. This makes the components
@@ -38,5 +42,6 @@ final class MuPlugin {
 		( new S3UploadsBootstrap() )->bootstrap();
 		( new SouinInvalidator() )->bootstrap();
 		( new SiteHealth() )->bootstrap();
+		( new SMTPMailer() )->bootstrap();
 	}
 }

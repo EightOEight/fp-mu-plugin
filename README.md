@@ -1,7 +1,7 @@
 # fp-mu-plugin
 
 **FrankenPress must-use plugin** — platform-essential WordPress glue for the
-FrankenPress stack. Three components, all platform-housekeeping:
+FrankenPress stack. Four components, all platform-housekeeping:
 
 **Documentation:** <https://docs.frankenpress.com/components/fp-mu-plugin>
 
@@ -9,7 +9,8 @@ FrankenPress stack. Three components, all platform-housekeeping:
 |---|---|
 | **S3UploadsBootstrap** | Configures [`humanmade/s3-uploads`](https://github.com/humanmade/S3-Uploads) from `FP_S3_*` env vars and **refuses media uploads** when S3 isn't fully configured (rather than silently falling back to ephemeral local disk in a containerized deploy). |
 | **SouinInvalidator** | `DEL`s Souin's Redis cache entries directly on `save_post`, `clean_post_cache`, `switch_theme`, etc. — Souin's documented HTTP invalidation APIs are broken in cache-handler v0.16.0 (see [`fp-runtime/PHASE-0.md`](https://github.com/EightOEight/fp-runtime/blob/main/PHASE-0.md)). |
-| **SiteHealth** | Suppresses Site Health tests whose failure is intentional under the immutable-image lockdown (`background_updates`, FS-write probes, `plugin_theme_auto_updates`) and adds a passing FrankenPress test that explains why. |
+| **SiteHealth** | Suppresses Site Health tests whose failure is intentional under the immutable-image lockdown (`background_updates`, FS-write probes, `plugin_theme_auto_updates`), adds a passing FrankenPress-branded test that explains why, and adds an SMTP-reachability test when SMTPMailer is configured. |
+| **SMTPMailer** | Wires the global PHPMailer to send via SMTP from `FP_SMTP_*` env vars. The fp-runtime image ships no MTA, so without this every `wp_mail()` call fails silently. Transport-agnostic (Postmark, SendGrid, Mailgun, AWS SES, in-cluster relay). Opt-in: no-op when `FP_SMTP_HOST` is unset. |
 
 That's the entire mu-plugin. Anything else (object cache, multisite URL fixing,
 WooCommerce log handlers, Prometheus metrics) is **optional** by the FrankenPress
@@ -89,6 +90,34 @@ correct). The TTL expiry is the safety net for anything missed.
 If `ext-redis` isn't loaded, or the connection fails, the invalidator
 becomes a silent no-op. **Errors are logged but never raised** — a broken
 cache layer must not break WP itself.
+
+### SMTPMailer
+
+| Var | Default | Purpose |
+|---|---|---|
+| `FP_SMTP_HOST` | (unset) | SMTP server hostname (e.g. `smtp.postmarkapp.com`). Component is a no-op when unset. |
+| `FP_SMTP_PORT` | `587` | TCP port |
+| `FP_SMTP_ENCRYPTION` | `tls` | `tls` (STARTTLS), `ssl` (implicit TLS), `none` (local dev only) |
+| `FP_SMTP_USERNAME` | (unset) | SMTP auth username |
+| `FP_SMTP_PASSWORD` | (unset) | SMTP auth password |
+| `FP_SMTP_FROM_EMAIL` | (WP `admin_email`) | `wp_mail_from` filter target |
+| `FP_SMTP_FROM_NAME` | (WP `blogname`) | `wp_mail_from_name` filter target |
+| `FP_SMTP_DISABLED` | `false` | Truthy to no-op the bootstrap. **Local dev only** — the chart never sets this; chart-level `smtp.enabled: false` covers the same need by simply not injecting the env. |
+
+When `FP_SMTP_HOST` is unset, SMTPMailer is a silent no-op and `wp_mail()`
+falls through to PHP's `mail()` (which fails on the fp-runtime image since
+no MTA is shipped — that's the intentional default state for sites that
+haven't opted into SMTP yet). When the host is set but unreachable / auth
+fails, `wp_mail()` returns `false` and the failure is logged; we never retry,
+queue, or fall back to `mail()`. The "is my SMTP actually working" check is
+in the `SiteHealth` component (only added when `FP_SMTP_HOST` is set).
+
+**Plugin-coexistence note.** A site that composer-installs a competing
+SMTP plugin (WP Mail SMTP, FluentSMTP, the Postmark official plugin) will
+override SMTPMailer's config — those run as regular plugins after must-use
+plugins and re-hook `phpmailer_init` at the same priority, so last-writer
+wins. That's the correct behaviour: the user opted into the plugin
+explicitly.
 
 ## Souin Redis key shape (for reference)
 
