@@ -18,10 +18,6 @@ baseline definition — sites that need it install it themselves. Keeping the
 must-use surface tiny means less chance of platform-level regressions, easier
 audit, and a cleaner contract with downstream sites.
 
-## Status
-
-🚧 Phase 2 in progress — first release will be `v0.1.0`.
-
 ## Install
 
 Composer-installed into a Bedrock-layout site:
