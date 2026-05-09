@@ -15,7 +15,7 @@ lives in a regular plugin (or a fork of this).
 | `FrankenPress\SiteHealth` | Suppresses Site Health tests whose failure is intentional under the immutable-image lockdown (`background_updates`, FS-write probes, `plugin_theme_auto_updates`) and adds a passing FrankenPress-branded test that explains why those tests are gone. |
 
 Composer name: **`eightoeight/fp-mu-plugin`** (PSR-4 namespace `FrankenPress\\`).
-Latest: `v0.2.0`.
+Latest: `v0.5.0`.
 
 Public docs: **<https://docs.frankenpress.com/components/fp-mu-plugin>**
 
