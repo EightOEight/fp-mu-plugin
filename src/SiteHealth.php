@@ -88,13 +88,13 @@ final class SiteHealth {
 		}
 
 		$tests['direct']['frankenpress_lockdown'] = array(
-			'label' => __( 'FrankenPress immutable-image lockdown', 'fp-mu-plugin' ),
+			'label' => __( 'FrankenPress immutable-image lockdown', 'mu-plugin' ),
 			'test'  => array( $this, 'test_lockdown' ),
 		);
 
 		if ( '' !== (string) getenv( 'FP_SMTP_HOST' ) ) {
 			$tests['direct']['frankenpress_smtp_reachability'] = array(
-				'label' => __( 'FrankenPress SMTP server reachable', 'fp-mu-plugin' ),
+				'label' => __( 'FrankenPress SMTP server reachable', 'mu-plugin' ),
 				'test'  => array( $this, 'test_smtp_reachability' ),
 			);
 		}
@@ -110,21 +110,21 @@ final class SiteHealth {
 	 */
 	public function test_lockdown(): array {
 		return array(
-			'label'       => __( 'FrankenPress lockdown is active by design', 'fp-mu-plugin' ),
+			'label'       => __( 'FrankenPress lockdown is active by design', 'mu-plugin' ),
 			'status'      => 'good',
 			'badge'       => array(
-				'label' => __( 'Security', 'fp-mu-plugin' ),
+				'label' => __( 'Security', 'mu-plugin' ),
 				'color' => 'green',
 			),
 			'description' => sprintf(
 				'<p>%s</p><p>%s</p>',
 				esc_html__(
 					'This site runs on the FrankenPress platform. The container image is immutable and is the source of truth for site code: WordPress core, plugins, themes, and custom code are all baked at build time. The runtime filesystem is read-only.',
-					'fp-mu-plugin'
+					'mu-plugin'
 				),
 				esc_html__(
 					'As a result, auto-updates, in-admin plugin/theme installation, and admin-side file writes are intentionally disabled — they would land on ephemeral container disk and disappear on the next pod restart, or replicate inconsistently across replicas. Releases happen by rebuilding the site image and rolling out via Helm. The Site Health tests that check for those capabilities have been suppressed so this dashboard reports signal, not noise.',
-					'fp-mu-plugin'
+					'mu-plugin'
 				)
 			),
 			'actions'     => '',
@@ -152,13 +152,13 @@ final class SiteHealth {
 			// test when the env is set — but guard anyway in case the
 			// env is cleared between page-load and AJAX.
 			return array(
-				'label'       => __( 'SMTP not configured', 'fp-mu-plugin' ),
+				'label'       => __( 'SMTP not configured', 'mu-plugin' ),
 				'status'      => 'good',
 				'badge'       => array(
-					'label' => __( 'Email', 'fp-mu-plugin' ),
+					'label' => __( 'Email', 'mu-plugin' ),
 					'color' => 'gray',
 				),
-				'description' => sprintf( '<p>%s</p>', esc_html__( 'FP_SMTP_HOST is not set; SMTPMailer is a no-op.', 'fp-mu-plugin' ) ),
+				'description' => sprintf( '<p>%s</p>', esc_html__( 'FP_SMTP_HOST is not set; SMTPMailer is a no-op.', 'mu-plugin' ) ),
 				'actions'     => '',
 				'test'        => 'frankenpress_smtp_reachability',
 			);
@@ -175,13 +175,13 @@ final class SiteHealth {
 			return array(
 				'label'       => sprintf(
 					/* translators: %1$s: SMTP host. %2$d: SMTP port. */
-					__( 'SMTP server %1$s:%2$d is not reachable', 'fp-mu-plugin' ),
+					__( 'SMTP server %1$s:%2$d is not reachable', 'mu-plugin' ),
 					$host,
 					$port
 				),
 				'status'      => 'critical',
 				'badge'       => array(
-					'label' => __( 'Email', 'fp-mu-plugin' ),
+					'label' => __( 'Email', 'mu-plugin' ),
 					'color' => 'red',
 				),
 				'description' => sprintf(
@@ -189,7 +189,7 @@ final class SiteHealth {
 					esc_html(
 						sprintf(
 							/* translators: %1$d: errno. %2$s: error string. */
-							__( 'TCP connect failed (errno %1$d): %2$s. Outgoing email will fail until the SMTP server is reachable from this pod.', 'fp-mu-plugin' ),
+							__( 'TCP connect failed (errno %1$d): %2$s. Outgoing email will fail until the SMTP server is reachable from this pod.', 'mu-plugin' ),
 							$error_no,
 							$error_str
 						)
@@ -204,20 +204,20 @@ final class SiteHealth {
 		return array(
 			'label'       => sprintf(
 				/* translators: %1$s: SMTP host. %2$d: SMTP port. */
-				__( 'SMTP server %1$s:%2$d is reachable', 'fp-mu-plugin' ),
+				__( 'SMTP server %1$s:%2$d is reachable', 'mu-plugin' ),
 				$host,
 				$port
 			),
 			'status'      => 'good',
 			'badge'       => array(
-				'label' => __( 'Email', 'fp-mu-plugin' ),
+				'label' => __( 'Email', 'mu-plugin' ),
 				'color' => 'green',
 			),
 			'description' => sprintf(
 				'<p>%s</p>',
 				esc_html__(
 					'TCP connect to the configured SMTP server succeeded. SMTPMailer routes wp_mail() through this server. (This test does not validate auth or DKIM/SPF — see the install Job logs for delivery confirmation.)',
-					'fp-mu-plugin'
+					'mu-plugin'
 				)
 			),
 			'actions'     => '',

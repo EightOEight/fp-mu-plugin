@@ -11,7 +11,7 @@
  *
  * This file is the must-use bootstrapper. WordPress loads files in the
  * mu-plugins root alphabetically; everything else lives in subdirectories
- * (e.g. `fp-mu-plugin/`) so this single bootstrap is sufficient.
+ * (e.g. `mu-plugin/`) so this single bootstrap is sufficient.
  *
  * @package FrankenPress
  */
@@ -22,9 +22,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-// When composer-installed, the package lives at <mu-plugins>/fp-mu-plugin/
+// When composer-installed, the package lives at <mu-plugins>/mu-plugin/
 // and a symlink or composer-installer script places this file at the root.
-$fp_mu_plugin_dir = __DIR__ . '/fp-mu-plugin';
+$fp_mu_plugin_dir = __DIR__ . '/mu-plugin';
 if ( is_dir( $fp_mu_plugin_dir ) && file_exists( $fp_mu_plugin_dir . '/vendor/autoload.php' ) ) {
 	require_once $fp_mu_plugin_dir . '/vendor/autoload.php';
 } elseif ( file_exists( __DIR__ . '/vendor/autoload.php' ) ) {

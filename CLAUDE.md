@@ -1,4 +1,4 @@
-# CLAUDE.md — fp-mu-plugin
+# CLAUDE.md — mu-plugin
 
 Guidance for Claude Code (and other AI agents) when working in this repo.
 
@@ -14,14 +14,14 @@ lives in a regular plugin (or a fork of this).
 | `FrankenPress\SouinInvalidator` | Connects directly to Redis and `DEL`s Souin's HTTP cache entries on `save_post`, `clean_post_cache`, comment status changes, theme switch, permalink change, global-option change. Bypasses cache-handler v0.16.0's broken HTTP invalidation APIs. |
 | `FrankenPress\SiteHealth` | Suppresses Site Health tests whose failure is intentional under the immutable-image lockdown (`background_updates`, FS-write probes, `plugin_theme_auto_updates`) and adds a passing FrankenPress-branded test that explains why those tests are gone. |
 
-Composer name: **`eightoeight/fp-mu-plugin`** (PSR-4 namespace `FrankenPress\\`).
+Composer name: **`eightoeight/mu-plugin`** (PSR-4 namespace `FrankenPress\\`).
 Latest: `v0.5.0`.
 
-Public docs: **<https://docs.frankenpress.com/components/fp-mu-plugin>**
+Public docs: **<https://docs.frankenpress.com/components/mu-plugin>**
 
 ## File layout
 
-- `fp-mu-plugin.php` — root mu-plugin loader. WordPress only auto-loads PHP files at the root of `mu-plugins/`, not in subdirs. This file is what the consumer site's `roots/bedrock-autoloader` discovers.
+- `mu-plugin.php` — root mu-plugin loader. WordPress only auto-loads PHP files at the root of `mu-plugins/`, not in subdirs. This file is what the consumer site's `roots/bedrock-autoloader` discovers.
 - `src/MuPlugin.php` — wires the two components into WordPress hooks.
 - `src/S3UploadsBootstrap.php` — env → constants → `s3_uploads_s3_client_params` filter → require_once humanmade/s3-uploads. Refuses uploads via `wp_handle_upload_prefilter` when required env vars are missing.
 - `src/SouinInvalidator.php` — Redis client wrapper + WordPress hook callbacks. Computes Souin cache keys (`GET-<scheme>-<host>-<path>`) and DELs them.
@@ -32,7 +32,7 @@ Public docs: **<https://docs.frankenpress.com/components/fp-mu-plugin>**
 
 - **Three components is the contract.** Adding a fourth (URL fixer, object cache, metrics, WC log handler, etc.) requires explicit user approval. Sites that need those install them as regular plugins. The third component (SiteHealth) was added with explicit user sign-off as platform-housekeeping for the lockdown the platform already enforces — i.e. operationalising an existing platform decision, not a new feature.
 - **Errors are logged, never raised.** A broken Redis or missing s3-uploads makes the component a silent no-op (with `error_log`). The mu-plugin must never break WordPress request handling.
-- **Direct Redis DEL is the canonical invalidation path.** Souin's `PURGE`, POST-CRUD, and `/api.souin/*` admin endpoints are broken in cache-handler v0.16.0 — see `fp-runtime/PHASE-0.md`. Don't add code that depends on them coming back.
+- **Direct Redis DEL is the canonical invalidation path.** Souin's `PURGE`, POST-CRUD, and `/api.souin/*` admin endpoints are broken in cache-handler v0.16.0 — see `runtime/PHASE-0.md`. Don't add code that depends on them coming back.
 - **Hard-coded refusal beats silent fallback.** If `FP_S3_BUCKET`/`KEY`/`SECRET` are missing, the bootstrap registers `wp_handle_upload_prefilter` to **reject every upload**. In a containerized environment, silently writing to local disk is far worse than a hard fail.
 - **PSR-4 namespace is `FrankenPress\\`.** Don't introduce sub-namespaces deeper than `FrankenPress\Integrations\<X>` unless there's a reason.
 - **Strict types declared in every file** (`declare(strict_types=1);`).
@@ -62,7 +62,7 @@ Keep these in sync:
 
 1. The hook list in `src/SouinInvalidator.php` (or wherever else hooks live)
 2. README's component table + env-var table
-3. `https://docs.frankenpress.com/components/fp-mu-plugin`
+3. `https://docs.frankenpress.com/components/mu-plugin`
 4. `https://docs.frankenpress.com/operations/configuration` (env vars)
 
 ## Companion repos

@@ -1,16 +1,16 @@
-# fp-mu-plugin
+# mu-plugin
 
 **FrankenPress must-use plugin** — platform-essential WordPress glue for the
 FrankenPress stack. Four components, all platform-housekeeping:
 
-**Documentation:** <https://docs.frankenpress.com/components/fp-mu-plugin>
+**Documentation:** <https://docs.frankenpress.com/components/mu-plugin>
 
 | Component | What it does |
 |---|---|
 | **S3UploadsBootstrap** | Configures [`humanmade/s3-uploads`](https://github.com/humanmade/S3-Uploads) from `FP_S3_*` env vars and **refuses media uploads** when S3 isn't fully configured (rather than silently falling back to ephemeral local disk in a containerized deploy). |
 | **SouinInvalidator** | `DEL`s Souin's Redis cache entries directly on `save_post`, `clean_post_cache`, `switch_theme`, etc. — Souin's documented HTTP invalidation APIs are broken in cache-handler v0.16.0 (see [`runtime/PHASE-0.md`](https://github.com/frankenpress/runtime/blob/main/PHASE-0.md)). |
 | **SiteHealth** | Suppresses Site Health tests whose failure is intentional under the immutable-image lockdown (`background_updates`, FS-write probes, `plugin_theme_auto_updates`), adds a passing FrankenPress-branded test that explains why, and adds an SMTP-reachability test when SMTPMailer is configured. |
-| **SMTPMailer** | Wires the global PHPMailer to send via SMTP from `FP_SMTP_*` env vars. The fp-runtime image ships no MTA, so without this every `wp_mail()` call fails silently. Transport-agnostic (Postmark, SendGrid, Mailgun, AWS SES, in-cluster relay). Opt-in: no-op when `FP_SMTP_HOST` is unset. |
+| **SMTPMailer** | Wires the global PHPMailer to send via SMTP from `FP_SMTP_*` env vars. The runtime image ships no MTA, so without this every `wp_mail()` call fails silently. Transport-agnostic (Postmark, SendGrid, Mailgun, AWS SES, in-cluster relay). Opt-in: no-op when `FP_SMTP_HOST` is unset. |
 
 That's the entire mu-plugin. Anything else (object cache, multisite URL fixing,
 WooCommerce log handlers, Prometheus metrics) is **optional** by the FrankenPress
@@ -23,12 +23,12 @@ audit, and a cleaner contract with downstream sites.
 Composer-installed into a Bedrock-layout site:
 
 ```bash
-composer require eightoeight/fp-mu-plugin
+composer require eightoeight/mu-plugin
 ```
 
 This pulls `humanmade/s3-uploads` as a transitive dependency and lands the
-plugin at `web/app/mu-plugins/fp-mu-plugin/`. The bootstrapper file
-`fp-mu-plugin.php` needs to live in the mu-plugins root (one level up) —
+plugin at `web/app/mu-plugins/mu-plugin/`. The bootstrapper file
+`mu-plugin.php` needs to live in the mu-plugins root (one level up) —
 `humanmade/s3-uploads` and other mu-plugin packages handle this with a
 small loader file; we follow the same convention.
 
@@ -59,7 +59,7 @@ across replicas, which is far worse than a hard failure.
 
 | Var | Default | Purpose |
 |---|---|---|
-| `FP_SOUIN_REDIS_HOST` | `redis` | Redis hostname (matches `fp-runtime`'s docker-compose service) |
+| `FP_SOUIN_REDIS_HOST` | `redis` | Redis hostname (matches `runtime`'s docker-compose service) |
 | `FP_SOUIN_REDIS_PORT` | `6379` | Redis port |
 | `FP_SOUIN_REDIS_PASSWORD` | (empty) | Redis AUTH password |
 | `FP_SOUIN_REDIS_DB` | `0` | Logical database |
@@ -101,7 +101,7 @@ cache layer must not break WP itself.
 | `FP_SMTP_DISABLED` | `false` | Truthy to no-op the bootstrap. **Local dev only** — the chart never sets this; chart-level `smtp.enabled: false` covers the same need by simply not injecting the env. |
 
 When `FP_SMTP_HOST` is unset, SMTPMailer is a silent no-op and `wp_mail()`
-falls through to PHP's `mail()` (which fails on the fp-runtime image since
+falls through to PHP's `mail()` (which fails on the runtime image since
 no MTA is shipped — that's the intentional default state for sites that
 haven't opted into SMTP yet). When the host is set but unreachable / auth
 fails, `wp_mail()` returns `false` and the failure is logged; we never retry,
