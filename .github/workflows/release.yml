@@ -41,14 +41,14 @@ jobs:
       - name: Build release archives
         run: |
           set -euo pipefail
-          STAGE="dist/fp-mu-plugin"
+          STAGE="dist/mu-plugin"
           mkdir -p "$STAGE"
           # Ship runtime sources only — no tests, no CI, no source git history.
           cp -R src "$STAGE/"
           cp -R vendor "$STAGE/"
-          cp fp-mu-plugin.php composer.json LICENSE README.md "$STAGE/" 2>/dev/null || true
-          ( cd dist && tar -czf "fp-mu-plugin-${{ steps.tag.outputs.tag }}.tar.gz" fp-mu-plugin )
-          ( cd dist && zip -qr "fp-mu-plugin-${{ steps.tag.outputs.tag }}.zip" fp-mu-plugin )
+          cp mu-plugin.php composer.json LICENSE README.md "$STAGE/" 2>/dev/null || true
+          ( cd dist && tar -czf "mu-plugin-${{ steps.tag.outputs.tag }}.tar.gz" mu-plugin )
+          ( cd dist && zip -qr "mu-plugin-${{ steps.tag.outputs.tag }}.zip" mu-plugin )
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
@@ -56,5 +56,5 @@ jobs:
           tag_name: ${{ steps.tag.outputs.tag }}
           generate_release_notes: true
           files: |
-            dist/fp-mu-plugin-${{ steps.tag.outputs.tag }}.tar.gz
-            dist/fp-mu-plugin-${{ steps.tag.outputs.tag }}.zip
+            dist/mu-plugin-${{ steps.tag.outputs.tag }}.tar.gz
+            dist/mu-plugin-${{ steps.tag.outputs.tag }}.zip

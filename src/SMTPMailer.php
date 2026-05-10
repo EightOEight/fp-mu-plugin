@@ -5,7 +5,7 @@
  * Wires the global PHPMailer instance (the engine WordPress uses for
  * `wp_mail()`) to send via an SMTP server, configured from FrankenPress
  * environment variables. Without this — and without a host-side MTA, which
- * the fp-runtime image deliberately doesn't ship — `wp_mail()` falls
+ * the runtime image deliberately doesn't ship — `wp_mail()` falls
  * through to PHP's `mail()`, which calls `/usr/sbin/sendmail` and fails
  * silently in the container. That's the silent-fail mode every
  * FrankenPress site lands in by default; this component is the opt-in
