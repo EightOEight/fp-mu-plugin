@@ -8,7 +8,7 @@ FrankenPress stack. Four components, all platform-housekeeping:
 | Component | What it does |
 |---|---|
 | **S3UploadsBootstrap** | Configures [`humanmade/s3-uploads`](https://github.com/humanmade/S3-Uploads) from `FP_S3_*` env vars and **refuses media uploads** when S3 isn't fully configured (rather than silently falling back to ephemeral local disk in a containerized deploy). |
-| **SouinInvalidator** | `DEL`s Souin's Redis cache entries directly on `save_post`, `clean_post_cache`, `switch_theme`, etc. — Souin's documented HTTP invalidation APIs are broken in cache-handler v0.16.0 (see [`fp-runtime/PHASE-0.md`](https://github.com/EightOEight/fp-runtime/blob/main/PHASE-0.md)). |
+| **SouinInvalidator** | `DEL`s Souin's Redis cache entries directly on `save_post`, `clean_post_cache`, `switch_theme`, etc. — Souin's documented HTTP invalidation APIs are broken in cache-handler v0.16.0 (see [`runtime/PHASE-0.md`](https://github.com/frankenpress/runtime/blob/main/PHASE-0.md)). |
 | **SiteHealth** | Suppresses Site Health tests whose failure is intentional under the immutable-image lockdown (`background_updates`, FS-write probes, `plugin_theme_auto_updates`), adds a passing FrankenPress-branded test that explains why, and adds an SMTP-reachability test when SMTPMailer is configured. |
 | **SMTPMailer** | Wires the global PHPMailer to send via SMTP from `FP_SMTP_*` env vars. The fp-runtime image ships no MTA, so without this every `wp_mail()` call fails silently. Transport-agnostic (Postmark, SendGrid, Mailgun, AWS SES, in-cluster relay). Opt-in: no-op when `FP_SMTP_HOST` is unset. |
 
@@ -162,7 +162,7 @@ Redis or WP install needed.
 
 | Repo | Purpose |
 |---|---|
-| [`fp-runtime`](https://github.com/EightOEight/fp-runtime) | Base container image (Caddy + FrankenPHP + Souin) |
-| [`fp-mu-plugin`](https://github.com/EightOEight/fp-mu-plugin) (this repo) | Must-use plugin (this repo) |
-| [`fp-site-template`](https://github.com/EightOEight/fp-site-template) | GitHub template for new sites — Bedrock-layout WordPress with S3 uploads |
-| [`fp-charts`](https://github.com/EightOEight/fp-charts) | Helm chart `fp-site` for Kubernetes deployment |
+| [`runtime`](https://github.com/frankenpress/runtime) | Base container image (Caddy + FrankenPHP + Souin) |
+| [`mu-plugin`](https://github.com/frankenpress/mu-plugin) (this repo) | Must-use plugin (this repo) |
+| [`site-template`](https://github.com/frankenpress/site-template) | GitHub template for new sites — Bedrock-layout WordPress with S3 uploads |
+| [`charts`](https://github.com/frankenpress/charts) | Helm chart `site` for Kubernetes deployment |

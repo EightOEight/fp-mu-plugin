@@ -7,7 +7,7 @@
  * lifecycle events. This is the *direct-Redis-DEL* strategy chosen in the
  * Phase 0 spike — Souin's documented HTTP invalidation APIs (PURGE,
  * POST/DELETE-CRUD, /api.souin admin) are unreliable in cache-handler v0.16.0.
- * See https://github.com/EightOEight/fp-runtime/blob/main/PHASE-0.md.
+ * See https://github.com/frankenpress/runtime/blob/main/PHASE-0.md.
  *
  * The Redis key shape Souin uses (verified empirically):
  *

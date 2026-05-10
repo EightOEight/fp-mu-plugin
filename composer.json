@@ -11,8 +11,8 @@
         }
     ],
     "support": {
-        "issues": "https://github.com/EightOEight/fp-mu-plugin/issues",
-        "source": "https://github.com/EightOEight/fp-mu-plugin"
+        "issues": "https://github.com/frankenpress/mu-plugin/issues",
+        "source": "https://github.com/frankenpress/mu-plugin"
     },
     "require": {
         "php": ">=8.2",
