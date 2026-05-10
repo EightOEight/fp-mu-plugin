@@ -14,7 +14,7 @@ lives in a regular plugin (or a fork of this).
 | `FrankenPress\SouinInvalidator` | Connects directly to Redis and `DEL`s Souin's HTTP cache entries on `save_post`, `clean_post_cache`, comment status changes, theme switch, permalink change, global-option change. Bypasses cache-handler v0.16.0's broken HTTP invalidation APIs. |
 | `FrankenPress\SiteHealth` | Suppresses Site Health tests whose failure is intentional under the immutable-image lockdown (`background_updates`, FS-write probes, `plugin_theme_auto_updates`) and adds a passing FrankenPress-branded test that explains why those tests are gone. |
 
-Composer name: **`eightoeight/mu-plugin`** (PSR-4 namespace `FrankenPress\\`).
+Composer name: **`frankenpress/mu-plugin`** (PSR-4 namespace `FrankenPress\\`).
 Latest: `v0.5.0`.
 
 Public docs: **<https://docs.frankenpress.com/components/mu-plugin>**

@@ -23,7 +23,7 @@ audit, and a cleaner contract with downstream sites.
 Composer-installed into a Bedrock-layout site:
 
 ```bash
-composer require eightoeight/mu-plugin
+composer require frankenpress/mu-plugin
 ```
 
 This pulls `humanmade/s3-uploads` as a transitive dependency and lands the
