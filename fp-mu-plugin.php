@@ -1,7 +1,7 @@
 <?php
 /**
  * Plugin Name:  FrankenPress mu-plugin
- * Plugin URI:   https://github.com/EightOEight/fp-mu-plugin
+ * Plugin URI:   https://github.com/frankenpress/mu-plugin
  * Description:  Platform-essential WordPress glue for the FrankenPress stack: S3-uploads bootstrap, Souin cache invalidator, Site Health adjustments for the immutable-image lockdown, and SMTP mailer for wp_mail.
  * Version:      0.3.0
  * Author:       EightOEight

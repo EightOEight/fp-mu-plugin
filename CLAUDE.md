@@ -43,8 +43,8 @@ Public docs: **<https://docs.frankenpress.com/components/fp-mu-plugin>**
 - **Don't reintroduce QuerySplit, CDNOffloader, ContentFilter, NginxHelperActivator, MediaStorage, or BlobStore code from the old `wp-mu-plugin`.** They were intentionally dropped.
 - **Don't add MetricsCollector or WooCommerce log handlers here.** Those are optional integrations sites install themselves.
 - **Don't use `humanmade/s3-uploads`'s WP-CLI interface inline.** The bootstrap require_onces the plugin's main file but doesn't shell out — keep it that way for predictable load order.
-- **Don't change the Souin Redis key shape (`GET-<scheme>-<host>-<path>`)** without coordinating with [`fp-runtime`](https://github.com/EightOEight/fp-runtime). The runtime's Souin instance and this plugin's `SouinInvalidator` must agree on the cache key layout.
-- **Don't add a real Redis or WordPress install to the test suite.** Tests use Brain Monkey + Mockery. Integration tests against a live stack live in [`fp-charts`](https://github.com/EightOEight/fp-charts)' kind cluster smoke test.
+- **Don't change the Souin Redis key shape (`GET-<scheme>-<host>-<path>`)** without coordinating with [`runtime`](https://github.com/frankenpress/runtime). The runtime's Souin instance and this plugin's `SouinInvalidator` must agree on the cache key layout.
+- **Don't add a real Redis or WordPress install to the test suite.** Tests use Brain Monkey + Mockery. Integration tests against a live stack live in [`charts`](https://github.com/frankenpress/charts)' kind cluster smoke test.
 
 ## Local testing
 
@@ -69,8 +69,8 @@ Keep these in sync:
 
 | Repo | Purpose |
 |---|---|
-| [`fp-runtime`](https://github.com/EightOEight/fp-runtime) | Base container image (bakes this plugin in) |
-| [`fp-mu-plugin`](https://github.com/EightOEight/fp-mu-plugin) (this repo) | Must-use plugin |
-| [`fp-site-template`](https://github.com/EightOEight/fp-site-template) | GitHub template for new sites (composer-requires this plugin) |
-| [`fp-charts`](https://github.com/EightOEight/fp-charts) | Helm chart `fp-site` |
-| [`docs`](https://github.com/EightOEight/docs) | Mintlify docs site |
+| [`runtime`](https://github.com/frankenpress/runtime) | Base container image (bakes this plugin in) |
+| [`mu-plugin`](https://github.com/frankenpress/mu-plugin) (this repo) | Must-use plugin |
+| [`site-template`](https://github.com/frankenpress/site-template) | GitHub template for new sites (composer-requires this plugin) |
+| [`charts`](https://github.com/frankenpress/charts) | Helm chart `site` |
+| [`docs`](https://github.com/frankenpress/docs) | Mintlify docs site |
