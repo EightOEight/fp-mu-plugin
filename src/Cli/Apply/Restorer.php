@@ -152,13 +152,19 @@ final class Restorer {
 	 * is the canonical WordPress mechanism for ingesting WXR; it
 	 * handles ID remapping, term dedup, attachment refs, etc.
 	 *
-	 * **WP-Importer must be installed and active before apply runs.**
-	 * The plugin is *not* installed by this command — `wp plugin
-	 * install` requires a writable `WP_CONTENT_DIR/upgrade` and the
-	 * runtime image is read-only by design (immutable image,
-	 * DISALLOW_FILE_MODS=true). Sites consuming `wp fp apply` must
-	 * declare `wpackagist-plugin/wordpress-importer` in their
-	 * composer.json so the plugin is baked into the image.
+	 * WP-Importer lifecycle: managed transparently by ensure_wxr_importer()
+	 * and torn down in finally. Three modes the apply path navigates:
+	 *
+	 *   borrowed  — plugin already in active_plugins when we started.
+	 *               Don't touch it on teardown. The site is using it.
+	 *   activated — plugin was installed (file on disk) but inactive.
+	 *               We activated it. Leave it active on teardown (the
+	 *               file persists, the site can keep using it).
+	 *   installed — plugin wasn't on disk. We installed AND activated
+	 *               it. The file is in the install Job's overlay FS
+	 *               only — gone when the pod GC's. We MUST deactivate
+	 *               on teardown to keep wp_options.active_plugins
+	 *               consistent with the next web Pod's disk state.
 	 *
 	 * `--authors=skip` because designer-side WXR exports include the
 	 * designer's user as the post_author; we don't want to ship user
@@ -166,11 +172,12 @@ final class Restorer {
 	 * referenced user doesn't exist.
 	 */
 	private function import_wxr( string $gz_path ): void {
-		$this->require_wxr_importer();
+		$mode = $this->ensure_wxr_importer();
 
 		// Decompress to a tmp .xml file. wp import expects a path.
 		$tmp = tempnam( sys_get_temp_dir(), 'fp-wxr-' );
 		if ( false === $tmp ) {
+			$this->teardown_wxr_importer( $mode );
 			throw new RuntimeException( 'could not create temp file for WXR' );
 		}
 		$xml_path = $tmp . '.xml';
@@ -205,48 +212,83 @@ final class Restorer {
 			if ( file_exists( $tmp ) ) {
 				unlink( $tmp );
 			}
+			$this->teardown_wxr_importer( $mode );
 		}
 	}
 
 	/**
-	 * Ensure WP-Importer is installed AND active. If it's installed
-	 * (the plugin file exists under WP_PLUGIN_DIR — composer baked it
-	 * in) but not active, activate it on the fly. Activation is a
-	 * pure DB write to wp_options.active_plugins; it does NOT need
-	 * the upgrade directory that `wp plugin install` would touch, so
-	 * it works fine under the immutable-image lockdown.
+	 * Make sure WP-Importer is active before `wp import` runs.
 	 *
-	 * If the plugin file is genuinely absent (consumer site didn't
-	 * `composer require wpackagist-plugin/wordpress-importer`), throw
-	 * a clear actionable error.
+	 *   borrowed  — already active, leave it alone
+	 *   activated — installed but inactive → activate (option write only)
+	 *   installed — neither installed nor active → install + activate
+	 *
+	 * `wp plugin install` requires (a) a writable filesystem and
+	 * (b) `DISALLOW_FILE_MODS` not defined or false. Both are arranged
+	 * by the chart's install Job: it runs with
+	 * `readOnlyRootFilesystem: false` and writes a one-shot
+	 * `/tmp/lockdown-override.php` (sourced via wp-cli `--require=`)
+	 * that pre-defines the lockdown constants to `false` before
+	 * wp-config.php loads. Web Pods (where the lockdown protects
+	 * against supply-chain mutation) are unaffected.
+	 *
+	 * @return 'borrowed' | 'activated' | 'installed'
 	 */
-	private function require_wxr_importer(): void {
+	private function ensure_wxr_importer(): string {
 		$slug = 'wordpress-importer/wordpress-importer.php';
 
 		$active_plugins = (array) ( ( $this->option_reader )( 'active_plugins' ) ?? array() );
 		if ( in_array( $slug, $active_plugins, true ) ) {
-			return;
+			return 'borrowed';
 		}
 
 		$plugin_dir  = defined( 'WP_PLUGIN_DIR' ) ? (string) constant( 'WP_PLUGIN_DIR' ) : '';
 		$plugin_file = '' !== $plugin_dir ? rtrim( $plugin_dir, '/' ) . '/' . $slug : '';
 		$installed   = '' !== $plugin_file && is_file( $plugin_file );
 
-		if ( ! $installed ) {
-			throw new RuntimeException(
-				'snapshot apply requires the WP-Importer plugin to be installed. '
-					. 'Add `wpackagist-plugin/wordpress-importer` (^0.9) to your site repo\'s composer.json '
-					. 'and rebuild the image; the runtime is read-only at apply time so '
-					. '`wp plugin install` cannot be used to fetch it on demand.'
+		if ( $installed ) {
+			// Disk has it, options doesn't — activate. Pure option-write,
+			// no filesystem mutation, safe even on a RO root.
+			( $this->wp_runner )(
+				sprintf( 'plugin activate %s', escapeshellarg( 'wordpress-importer' ) ),
+				array()
 			);
+			return 'activated';
 		}
 
-		// Plugin is on disk but inactive — activate it. Activation is
-		// just an option-write; safe under the immutable-image lockdown.
+		// Not on disk — install + activate in one shot. Requires the
+		// chart-side install Job relaxations described above. The plugin
+		// file lives in the Job pod's writable overlay only.
 		( $this->wp_runner )(
-			sprintf( 'plugin activate %s', escapeshellarg( 'wordpress-importer' ) ),
+			sprintf( 'plugin install %s --activate', escapeshellarg( 'wordpress-importer' ) ),
 			array()
 		);
+		return 'installed';
+	}
+
+	/**
+	 * Reverse `ensure_wxr_importer()`'s side effects appropriately for
+	 * the mode it returned. Only `installed` requires action: the plugin
+	 * file is in the Job pod's ephemeral overlay, so we deactivate so
+	 * the next web Pod doesn't try to load a file that's no longer on
+	 * disk (`require_once` would fatal on each request).
+	 */
+	private function teardown_wxr_importer( string $mode ): void {
+		if ( 'installed' !== $mode ) {
+			return;
+		}
+		try {
+			( $this->wp_runner )(
+				sprintf( 'plugin deactivate %s', escapeshellarg( 'wordpress-importer' ) ),
+				array()
+			);
+		} catch ( \Throwable $e ) {
+			// Deactivation failure during teardown is loud-but-non-fatal:
+			// the apply itself has either succeeded or already thrown
+			// the real error. We don't want to mask that with a
+			// secondary teardown exception. Best-effort.
+			error_log( 'fp apply: WP-Importer teardown deactivate failed: ' . $e->getMessage() );
+		}
 	}
 
 	/**
