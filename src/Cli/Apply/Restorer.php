@@ -152,12 +152,22 @@ final class Restorer {
 	 * is the canonical WordPress mechanism for ingesting WXR; it
 	 * handles ID remapping, term dedup, attachment refs, etc.
 	 *
+	 * **WP-Importer must be installed and active before apply runs.**
+	 * The plugin is *not* installed by this command — `wp plugin
+	 * install` requires a writable `WP_CONTENT_DIR/upgrade` and the
+	 * runtime image is read-only by design (immutable image,
+	 * DISALLOW_FILE_MODS=true). Sites consuming `wp fp apply` must
+	 * declare `wpackagist-plugin/wordpress-importer` in their
+	 * composer.json so the plugin is baked into the image.
+	 *
 	 * `--authors=skip` because designer-side WXR exports include the
 	 * designer's user as the post_author; we don't want to ship user
 	 * accounts. `wp post` calls preserve existing post authors if the
 	 * referenced user doesn't exist.
 	 */
 	private function import_wxr( string $gz_path ): void {
+		$this->require_wxr_importer();
+
 		// Decompress to a tmp .xml file. wp import expects a path.
 		$tmp = tempnam( sys_get_temp_dir(), 'fp-wxr-' );
 		if ( false === $tmp ) {
@@ -184,10 +194,6 @@ final class Restorer {
 			fclose( $out );
 			gzclose( $gz );
 
-			// Ensure WP-Importer is installed + active. `wp plugin install
-			// wordpress-importer --activate` is idempotent.
-			( $this->wp_runner )( 'plugin install wordpress-importer --activate', array() );
-
 			( $this->wp_runner )(
 				sprintf( 'import %s --authors=skip --skip=image_resize', escapeshellarg( $xml_path ) ),
 				array()
@@ -200,6 +206,32 @@ final class Restorer {
 				unlink( $tmp );
 			}
 		}
+	}
+
+	/**
+	 * Fail fast with a clear, actionable message if WP-Importer isn't
+	 * present. The plugin must be baked into the consumer site's image
+	 * via `composer require wpackagist-plugin/wordpress-importer`. We
+	 * don't attempt `wp plugin install` — it requires a writable
+	 * upgrade directory that the runtime intentionally lacks.
+	 */
+	private function require_wxr_importer(): void {
+		$active = function_exists( 'is_plugin_active' )
+			? \is_plugin_active( 'wordpress-importer/wordpress-importer.php' )
+			: in_array(
+				'wordpress-importer/wordpress-importer.php',
+				(array) ( ( $this->option_reader )( 'active_plugins' ) ?? array() ),
+				true
+			);
+		if ( $active ) {
+			return;
+		}
+		throw new RuntimeException(
+			'snapshot apply requires the WP-Importer plugin to be installed and active. '
+				. 'Add `wpackagist-plugin/wordpress-importer` (^0.9) to your site repo\'s composer.json '
+				. 'and rebuild the image; the runtime is read-only at apply time so '
+				. '`wp plugin install` cannot be used to fetch it on demand.'
+		);
 	}
 
 	/**

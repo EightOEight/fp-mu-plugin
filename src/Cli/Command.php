@@ -158,13 +158,34 @@ final class Command {
 			(string) home_url(),
 			$this->adapters(),
 			static function ( string $command, array $assoc ): mixed {
-				return \WP_CLI::runcommand(
+				// exit_error=false → if the inner wp-cli command fails,
+				// runcommand returns the result object (with stderr +
+				// non-zero return_code) instead of calling WP_CLI::halt(1)
+				// and killing the outer process silently. Without this,
+				// a failure like "WP-Importer not installed" produces a
+				// blank exit-1 from `wp fp apply` with zero diagnostic.
+				$result = \WP_CLI::runcommand(
 					$command,
 					array(
-						'return' => 'all',
-						'launch' => false,
+						'return'     => 'all',
+						'launch'     => false,
+						'exit_error' => false,
 					) + $assoc
 				);
+				if ( is_object( $result ) && isset( $result->return_code ) && 0 !== (int) $result->return_code ) {
+					$stderr = isset( $result->stderr ) ? (string) $result->stderr : '';
+					$stdout = isset( $result->stdout ) ? (string) $result->stdout : '';
+					$msg    = trim( $stderr ) !== '' ? trim( $stderr ) : trim( $stdout );
+					throw new \RuntimeException(
+						sprintf(
+							'inner wp-cli command "%s" exited %d: %s',
+							$command,
+							(int) $result->return_code,
+							'' !== $msg ? $msg : '(no output)'
+						)
+					);
+				}
+				return $result;
 			},
 			static fn ( string $key ): mixed => get_option( $key, null ),
 			static fn ( string $key, mixed $value, bool $autoload ): bool => update_option( $key, $value, $autoload ),
