@@ -122,20 +122,73 @@ final class WxrCapturer {
 	 * @param array<int, int> $ids
 	 */
 	private function run_export( array $ids, string $output_path ): void {
-		// WP_CLI::runcommand's second argument is its OWN options dict
-		// (return / launch / parse / etc.), NOT a mapping that becomes
-		// wp-cli flags. Flags have to be in the command string itself.
-		// Caller (Capturer) constructs the wp_runner closure to forward
-		// runcommand options; we build the flag string here.
+		// `wp export` has no --filename flag — its CLI accepts --dir
+		// (with an auto-generated filename inside) or --stdout. We use
+		// --stdout because it lets us write to an arbitrary path
+		// without parsing the auto-generated name out of wp-cli's
+		// console output.
+		//
+		// The runner closure passes the subprocess's stdout back to
+		// us via the WP_CLI::runcommand return object (return=>'all'),
+		// so we can write it to disk ourselves at exactly the path
+		// the manifest will point to.
+		//
+		// --skip_comments because comments are not part of the
+		// designer-scope content; user-generated comments belong to
+		// the live site and would be re-imported as duplicates on
+		// apply anyway.
 		$command = sprintf(
-			'export --post__in=%s --filename=%s',
-			escapeshellarg( implode( ',', $ids ) ),
-			escapeshellarg( $output_path )
+			'export --post__in=%s --stdout --skip_comments',
+			implode( ',', array_map( 'intval', $ids ) )
 		);
-		( $this->wp_runner )( $command, array() );
-		if ( ! is_file( $output_path ) ) {
-			throw new RuntimeException( "wxr-capturer: wp export ran but produced no file at {$output_path}" );
+		$result  = ( $this->wp_runner )( $command, array() );
+
+		$stdout = $this->extract_stdout( $result );
+		if ( '' === $stdout ) {
+			$stderr = $this->extract_stderr( $result );
+			throw new RuntimeException(
+				'wxr-capturer: wp export produced no stdout' .
+				( '' !== $stderr ? ' (stderr: ' . trim( $stderr ) . ')' : '' )
+			);
 		}
+
+		if ( false === file_put_contents( $output_path, $stdout ) ) {
+			throw new RuntimeException( "wxr-capturer: could not write WXR to {$output_path}" );
+		}
+	}
+
+	/**
+	 * Pull stdout off a WP_CLI::runcommand result. The return shape is
+	 * `stdClass{ stdout, stderr, return_code }` when called with
+	 * `return => 'all'`; we accept other shapes defensively so unit
+	 * tests can pass a string or array.
+	 *
+	 * @param mixed $result
+	 */
+	private function extract_stdout( $result ): string {
+		if ( is_object( $result ) && isset( $result->stdout ) ) {
+			return (string) $result->stdout;
+		}
+		if ( is_array( $result ) && isset( $result['stdout'] ) ) {
+			return (string) $result['stdout'];
+		}
+		if ( is_string( $result ) ) {
+			return $result;
+		}
+		return '';
+	}
+
+	/**
+	 * @param mixed $result
+	 */
+	private function extract_stderr( $result ): string {
+		if ( is_object( $result ) && isset( $result->stderr ) ) {
+			return (string) $result->stderr;
+		}
+		if ( is_array( $result ) && isset( $result['stderr'] ) ) {
+			return (string) $result['stderr'];
+		}
+		return '';
 	}
 
 	private function gzip_file( string $in_path, string $out_path ): void {
