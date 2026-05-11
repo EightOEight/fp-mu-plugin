@@ -137,56 +137,82 @@ final class WxrCapturer {
 		// designer-scope content; user-generated comments belong to
 		// the live site and would be re-imported as duplicates on
 		// apply anyway.
-		$command = sprintf(
-			'export --post__in=%s --stdout --skip_comments',
-			implode( ',', array_map( 'intval', $ids ) )
+		// Shell out via proc_open instead of WP_CLI::runcommand:
+		// runcommand's launch=true subprocess handling can deadlock on
+		// large exports (observed in dogfood: ~180 post IDs hung
+		// indefinitely). Direct proc_open with explicit /dev/null on
+		// stdin avoids the whole class of issue.
+		$wp_bin = $this->locate_wp_binary();
+		$cmd    = array(
+			$wp_bin,
+			'--allow-root',
+			'--path=' . $this->wp_path(),
+			'export',
+			'--post__in=' . implode( ',', array_map( 'intval', $ids ) ),
+			'--stdout',
+			'--skip_comments',
 		);
-		$result  = ( $this->wp_runner )( $command, array() );
 
-		$stdout = $this->extract_stdout( $result );
-		if ( '' === $stdout ) {
-			$stderr = $this->extract_stderr( $result );
+		$descs = array(
+			0 => array( 'file', '/dev/null', 'r' ),
+			1 => array( 'pipe', 'w' ),
+			2 => array( 'pipe', 'w' ),
+		);
+
+		$proc = proc_open( $cmd, $descs, $pipes );
+		if ( ! is_resource( $proc ) ) {
+			throw new RuntimeException( 'wxr-capturer: proc_open(wp export) failed' );
+		}
+
+		$out_fh = fopen( $output_path, 'wb' );
+		if ( false === $out_fh ) {
+			proc_close( $proc );
+			throw new RuntimeException( "wxr-capturer: could not open {$output_path} for writing" );
+		}
+		try {
+			while ( ! feof( $pipes[1] ) ) {
+				$chunk = fread( $pipes[1], 64 * 1024 );
+				if ( false === $chunk || '' === $chunk ) {
+					break;
+				}
+				fwrite( $out_fh, $chunk );
+			}
+		} finally {
+			fclose( $out_fh );
+		}
+		$stderr = (string) stream_get_contents( $pipes[2] );
+		fclose( $pipes[1] );
+		fclose( $pipes[2] );
+		$exit_code = proc_close( $proc );
+
+		if ( 0 !== $exit_code ) {
+			@unlink( $output_path );
 			throw new RuntimeException(
-				'wxr-capturer: wp export produced no stdout' .
-				( '' !== $stderr ? ' (stderr: ' . trim( $stderr ) . ')' : '' )
+				sprintf(
+					'wxr-capturer: wp export exited %d%s',
+					$exit_code,
+					'' !== trim( $stderr ) ? ' (stderr: ' . trim( $stderr ) . ')' : ''
+				)
 			);
 		}
 
-		if ( false === file_put_contents( $output_path, $stdout ) ) {
-			throw new RuntimeException( "wxr-capturer: could not write WXR to {$output_path}" );
+		if ( ! is_file( $output_path ) || 0 === filesize( $output_path ) ) {
+			throw new RuntimeException( "wxr-capturer: wp export produced no output at {$output_path}" );
 		}
 	}
 
-	/**
-	 * Pull stdout off a WP_CLI::runcommand result. The return shape is
-	 * `stdClass{ stdout, stderr, return_code }` when called with
-	 * `return => 'all'`; we accept other shapes defensively so unit
-	 * tests can pass a string or array.
-	 *
-	 * @param mixed $result
-	 */
-	private function extract_stdout( $result ): string {
-		if ( is_object( $result ) && isset( $result->stdout ) ) {
-			return (string) $result->stdout;
+	private function locate_wp_binary(): string {
+		foreach ( array( '/usr/local/bin/wp', '/usr/bin/wp' ) as $candidate ) {
+			if ( is_executable( $candidate ) ) {
+				return $candidate;
+			}
 		}
-		if ( is_array( $result ) && isset( $result['stdout'] ) ) {
-			return (string) $result['stdout'];
-		}
-		if ( is_string( $result ) ) {
-			return $result;
-		}
-		return '';
+		return 'wp';
 	}
 
-	/**
-	 * @param mixed $result
-	 */
-	private function extract_stderr( $result ): string {
-		if ( is_object( $result ) && isset( $result->stderr ) ) {
-			return (string) $result->stderr;
-		}
-		if ( is_array( $result ) && isset( $result['stderr'] ) ) {
-			return (string) $result['stderr'];
+	private function wp_path(): string {
+		if ( defined( 'ABSPATH' ) ) {
+			return rtrim( (string) constant( 'ABSPATH' ), '/' );
 		}
 		return '';
 	}
