@@ -1,6 +1,6 @@
 {
     "name": "frankenpress/mu-plugin",
-    "description": "FrankenPress must-use plugin — platform-essential WordPress glue: humanmade/s3-uploads bootstrap (with safety guards), Souin cache invalidator, Site Health adjustments for the immutable-image lockdown, and SMTP mailer for wp_mail. Four components, all platform-housekeeping.",
+    "description": "FrankenPress must-use plugin — platform-essential WordPress glue: humanmade/s3-uploads bootstrap (with safety guards), Souin cache invalidator, Site Health adjustments for the immutable-image lockdown, SMTP mailer for wp_mail, and the `wp fp` snapshot/apply WP-CLI subcommands (Phase 0 of the FrankenPress promotion CLI). Four request-path components plus one off-request-path CLI surface.",
     "license": "Apache-2.0",
     "type": "wordpress-muplugin",
     "authors": [

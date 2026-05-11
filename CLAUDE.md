@@ -4,15 +4,18 @@ Guidance for Claude Code (and other AI agents) when working in this repo.
 
 ## What this repo is
 
-The **must-use plugin** for the FrankenPress stack. **Three components**,
-all runtime platform-housekeeping; anything else is **optional** and
-lives in a regular plugin (or a fork of this).
+The **must-use plugin** for the FrankenPress stack. **Four request-path
+components + one off-request-path CLI surface**, all runtime
+platform-housekeeping; anything else is **optional** and lives in a
+regular plugin (or a fork of this).
 
 | Component | Job |
 |---|---|
-| `FrankenPress\S3UploadsBootstrap` | Configures `humanmade/s3-uploads` from `FP_S3_*` env vars; **refuses uploads** if S3 isn't fully wired (no silent local-disk fallback). |
+| `FrankenPress\S3UploadsBootstrap` | Configures `humanmade/s3-uploads` from `FP_S3_*` env vars; **refuses uploads** if S3 isn't fully wired (no silent local-disk fallback). Auto-disables out-of-cluster (`KUBERNETES_SERVICE_HOST` unset) so local dev gets ordinary local-disk uploads. |
 | `FrankenPress\SouinInvalidator` | Connects directly to Redis and `DEL`s Souin's HTTP cache entries on `save_post`, `clean_post_cache`, comment status changes, theme switch, permalink change, global-option change. Bypasses cache-handler v0.16.0's broken HTTP invalidation APIs. |
 | `FrankenPress\SiteHealth` | Suppresses Site Health tests whose failure is intentional under the immutable-image lockdown (`background_updates`, FS-write probes, `plugin_theme_auto_updates`) and adds a passing FrankenPress-branded test that explains why those tests are gone. |
+| `FrankenPress\SMTPMailer` | Wires the global PHPMailer to send via SMTP when `FP_SMTP_HOST` is set. Without it, `wp_mail()` silently fails in the container (no MTA in the runtime image). |
+| `FrankenPress\Cli\Command` *(off the request path)* | Registers `wp fp snapshot` + `wp fp apply` WP-CLI subcommands. Snapshot captures local site state (DB, plugin diff, premium-theme adapter state) into a portable artifact; apply restores one into the current site with idempotency markers. Phase 0 of the [`fp` design](../../.aidocs/fp-cli-design.md). Only loads under `WP_CLI` — zero overhead on web requests. |
 
 Composer name: **`frankenpress/mu-plugin`** (PSR-4 namespace `FrankenPress\\`).
 Latest: `v0.5.0`.
@@ -30,7 +33,7 @@ Public docs: **<https://docs.frankenpress.com/components/mu-plugin>**
 
 ## Conventions
 
-- **Three components is the contract.** Adding a fourth (URL fixer, object cache, metrics, WC log handler, etc.) requires explicit user approval. Sites that need those install them as regular plugins. The third component (SiteHealth) was added with explicit user sign-off as platform-housekeeping for the lockdown the platform already enforces — i.e. operationalising an existing platform decision, not a new feature.
+- **Four request-path components is the contract.** Adding a fifth on the request path (URL fixer, object cache, metrics, WC log handler, etc.) requires explicit user approval. Sites that need those install them as regular plugins. Each component beyond the initial three (SiteHealth, SMTPMailer) landed with explicit user sign-off as platform-housekeeping for an existing platform decision, not a new feature. Off-request-path additions (e.g. `Cli\Command`, which only loads under `WP_CLI`) follow the same approval rule but don't count against the request-path baseline — they add zero overhead to normal page renders.
 - **Errors are logged, never raised.** A broken Redis or missing s3-uploads makes the component a silent no-op (with `error_log`). The mu-plugin must never break WordPress request handling.
 - **Direct Redis DEL is the canonical invalidation path.** Souin's `PURGE`, POST-CRUD, and `/api.souin/*` admin endpoints are broken in cache-handler v0.16.0 — see `runtime/PHASE-0.md`. Don't add code that depends on them coming back.
 - **Hard-coded refusal beats silent fallback — in-cluster.** When the bootstrap is active and `FP_S3_BUCKET`/`KEY`/`SECRET` are missing, it registers `wp_handle_upload_prefilter` to **reject every upload**. In a Kubernetes deploy, silently writing to local disk is far worse than a hard fail. **Out-of-cluster the bootstrap auto-disables** (gated on `KUBERNETES_SERVICE_HOST`) so local dev gets ordinary local-disk uploads — the s3:// stream wrapper doesn't support every operation admin install flows need. Force-on for local S3 testing with `FP_S3_DISABLED=0`.
@@ -39,7 +42,7 @@ Public docs: **<https://docs.frankenpress.com/components/mu-plugin>**
 
 ## Don'ts
 
-- **Don't add a fourth component without explicit user approval.** The slim baseline is a deliberate scope decision. (Three is the current ceiling; SiteHealth landed with explicit sign-off because it's platform-housekeeping for the lockdown that's already enforced elsewhere, not a new feature.)
+- **Don't add a fifth request-path component without explicit user approval.** The slim baseline is a deliberate scope decision. Each addition beyond the initial three required sign-off; SMTPMailer (4th) and the off-request-path `Cli\Command` (5th, WP-CLI only) both landed under that pattern.
 - **Don't reintroduce QuerySplit, CDNOffloader, ContentFilter, NginxHelperActivator, MediaStorage, or BlobStore code from the old `wp-mu-plugin`.** They were intentionally dropped.
 - **Don't add MetricsCollector or WooCommerce log handlers here.** Those are optional integrations sites install themselves.
 - **Don't use `humanmade/s3-uploads`'s WP-CLI interface inline.** The bootstrap require_onces the plugin's main file but doesn't shell out — keep it that way for predictable load order.

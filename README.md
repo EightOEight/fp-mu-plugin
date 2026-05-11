@@ -1,7 +1,8 @@
 # mu-plugin
 
 **FrankenPress must-use plugin** — platform-essential WordPress glue for the
-FrankenPress stack. Four components, all platform-housekeeping:
+FrankenPress stack. Four request-path components + one off-request-path
+CLI surface, all platform-housekeeping:
 
 **Documentation:** <https://docs.frankenpress.com/components/mu-plugin>
 
@@ -11,12 +12,33 @@ FrankenPress stack. Four components, all platform-housekeeping:
 | **SouinInvalidator** | `DEL`s Souin's Redis cache entries directly on `save_post`, `clean_post_cache`, `switch_theme`, etc. — Souin's documented HTTP invalidation APIs are broken in cache-handler v0.16.0 (see [`runtime/PHASE-0.md`](https://github.com/frankenpress/runtime/blob/main/PHASE-0.md)). |
 | **SiteHealth** | Suppresses Site Health tests whose failure is intentional under the immutable-image lockdown (`background_updates`, FS-write probes, `plugin_theme_auto_updates`), adds a passing FrankenPress-branded test that explains why, and adds an SMTP-reachability test when SMTPMailer is configured. |
 | **SMTPMailer** | Wires the global PHPMailer to send via SMTP from `FP_SMTP_*` env vars. The runtime image ships no MTA, so without this every `wp_mail()` call fails silently. Transport-agnostic (Postmark, SendGrid, Mailgun, AWS SES, in-cluster relay). Opt-in: no-op when `FP_SMTP_HOST` is unset. |
+| **Cli\\Command** *(WP-CLI only)* | Registers `wp fp snapshot` + `wp fp apply` subcommands. Captures a designer's local site state (DB + plugin diff + premium-theme adapter state) into a portable snapshot, and applies one to a running site with idempotency markers. Phase 0 of the [FrankenPress promotion CLI design](https://github.com/frankenpress/.github/blob/main/.aidocs/fp-cli-design.md). Loads only when `WP_CLI` is defined — zero overhead on web requests. |
 
 That's the entire mu-plugin. Anything else (object cache, multisite URL fixing,
 WooCommerce log handlers, Prometheus metrics) is **optional** by the FrankenPress
 baseline definition — sites that need it install it themselves. Keeping the
 must-use surface tiny means less chance of platform-level regressions, easier
 audit, and a cleaner contract with downstream sites.
+
+## `wp fp` CLI subcommands
+
+Phase 0 of the FrankenPress promotion CLI lives as WP-CLI subcommands.
+They run inside the WP environment (where serialised options, themes,
+and adapters are loaded) and emit / consume a portable snapshot bundle
+that downstream tooling (Makefile recipes in Phase 0, the Go `fp`
+binary in Phase 1+) wraps with promote orchestration.
+
+```bash
+# Capture local state into a snapshot directory
+wp fp snapshot --slug=architect-2 --note="The7 FSE Architect demo + accent tweak"
+
+# Apply a snapshot to the current site (used by the chart's post-install Job)
+wp fp apply --snapshot-dir=/tmp/fp-snapshot-architect-2-20260511-091422
+```
+
+`apply` is idempotent: it stamps `fp_snapshot_applied_ref` and
+`fp_snapshot_applied_sha256` options after success, and subsequent
+invocations with the same snapshot exit cleanly without re-importing.
 
 ## Install
 
