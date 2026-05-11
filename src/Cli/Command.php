@@ -230,11 +230,18 @@ final class Command {
 		if ( null !== $override && '' !== $override ) {
 			return (string) $override;
 		}
-		$root         = defined( 'ABSPATH' ) ? rtrim( (string) constant( 'ABSPATH' ), '/' ) : getcwd();
-		$root         = rtrim( $root, '/' );
-		$root_trimmed = preg_replace( '#/wp$#', '', $root );
-		if ( null !== $root_trimmed && '' !== $root_trimmed ) {
-			$root = $root_trimmed;
+		// Bedrock layout: ABSPATH = <site-root>/web/wp/. We want
+		// <site-root>/web/imports/<slug>/. dirname(..., 2) climbs from
+		// /app/web/wp to /app (site root) cleanly; the older
+		// preg_replace('#/wp$#') trick stripped only one segment and
+		// produced /app/web/web/imports (the "web" appears twice).
+		$abspath = defined( 'ABSPATH' ) ? rtrim( (string) constant( 'ABSPATH' ), '/' ) : '';
+		if ( '' !== $abspath && '/web/wp' === substr( $abspath, -7 ) ) {
+			$root = dirname( $abspath, 2 );
+		} elseif ( '' !== $abspath ) {
+			$root = dirname( $abspath );
+		} else {
+			$root = (string) getcwd();
 		}
 		$safe = strtolower( preg_replace( '/[^a-z0-9]+/i', '-', $slug ) ?? 'snapshot' );
 		$safe = trim( $safe, '-' );

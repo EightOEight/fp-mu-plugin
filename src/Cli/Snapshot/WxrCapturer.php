@@ -142,8 +142,18 @@ final class WxrCapturer {
 		// large exports (observed in dogfood: ~180 post IDs hung
 		// indefinitely). Direct proc_open with explicit /dev/null on
 		// stdin avoids the whole class of issue.
-		$wp_bin = $this->locate_wp_binary();
-		$cmd    = array(
+		//
+		// Stderr is redirected to a regular file (NOT a pipe) so the
+		// kernel handles drain. wp-cli's `wp export` emits a progress
+		// line per post to stderr; with a pipe, once the ~64KB kernel
+		// pipe buffer fills, the child blocks writing while the parent
+		// is busy reading stdout, classic Unix subprocess deadlock.
+		// (Observed in dogfood: ~180 posts, stdout frozen at 751558
+		// bytes.) A file-descriptor target has no buffer ceiling, so
+		// the child never blocks on stderr.
+		$wp_bin     = $this->locate_wp_binary();
+		$stderr_log = $output_path . '.stderr.log';
+		$cmd        = array(
 			$wp_bin,
 			'--allow-root',
 			'--path=' . $this->wp_path(),
@@ -156,7 +166,7 @@ final class WxrCapturer {
 		$descs = array(
 			0 => array( 'file', '/dev/null', 'r' ),
 			1 => array( 'pipe', 'w' ),
-			2 => array( 'pipe', 'w' ),
+			2 => array( 'file', $stderr_log, 'w' ),
 		);
 
 		$proc = proc_open( $cmd, $descs, $pipes );
@@ -180,10 +190,11 @@ final class WxrCapturer {
 		} finally {
 			fclose( $out_fh );
 		}
-		$stderr = (string) stream_get_contents( $pipes[2] );
 		fclose( $pipes[1] );
-		fclose( $pipes[2] );
 		$exit_code = proc_close( $proc );
+
+		$stderr = is_file( $stderr_log ) ? (string) file_get_contents( $stderr_log ) : '';
+		@unlink( $stderr_log );
 
 		if ( 0 !== $exit_code ) {
 			@unlink( $output_path );
