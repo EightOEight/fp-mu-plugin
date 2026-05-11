@@ -23,7 +23,7 @@ namespace FrankenPress\Cli\Snapshot;
 
 final class Manifest {
 
-	public const SCHEMA = 'fp.snapshot/v1';
+	public const SCHEMA = 'fp.snapshot/v2';
 
 	/**
 	 * @param array<string, mixed> $data Top-level manifest keys, already populated

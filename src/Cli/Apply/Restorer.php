@@ -1,22 +1,29 @@
 <?php
 /**
- * Snapshot restorer — orchestrates `wp fp apply`.
+ * Snapshot restorer — orchestrates `wp fp apply` in fp.snapshot/v2.
  *
- * Inverse of {@see \FrankenPress\Cli\Snapshot\Capturer}. Reads a snapshot
- * directory (or a downloaded copy of one — the Go-side `fp` binary
- * fetches from S3 first), verifies its integrity, imports the SQL
- * dump, runs `wp search-replace` to retarget URLs to the current
- * site, fires premium-theme adapter `post_restore()` hooks, and stamps
- * idempotency markers so subsequent invocations no-op.
+ * Inverse of {@see \FrankenPress\Cli\Snapshot\Capturer}. Reads a
+ * snapshot directory, verifies its integrity, imports the WXR via
+ * WP-Importer, applies the scoped options sidecar, fires adapter
+ * post_apply() hooks, and stamps idempotency markers.
+ *
+ * Why WP-Importer (rather than `wp db import`):
+ *
+ *   - WXR is additive — only INSERTs new posts; skips existing terms
+ *     by slug; remaps post IDs on collision and fixes up postmeta
+ *     references automatically.
+ *   - NO DROPs, NO DELETEs, NO TRUNCATES anywhere in the apply path.
+ *   - Tables outside the snapshot scope (wc_orders, wp_users,
+ *     wp_comments) cannot be touched — they're literally not in the
+ *     WXR file, and the options sidecar only touches option_names
+ *     declared in scope.
  *
  * Idempotency boundary:
  *
- *   wp_option `fp_snapshot_applied_ref`     === manifest.id
- *   wp_option `fp_snapshot_applied_sha256`  === manifest.contents.db_sha256
+ *   wp_options.fp_snapshot_applied_ref     === manifest.id
+ *   wp_options.fp_snapshot_applied_sha256  === manifest.contents.wxr_sha256
  *
- * Both must match to short-circuit. Phase 5 of the plan ("Helm hook
- * hardening") tightens this further — cosign-verifies the manifest
- * signature before this code runs.
+ * Both match → skipped. Either differs → re-runs the full apply.
  *
  * @package FrankenPress\Cli\Apply
  */
@@ -25,7 +32,7 @@ declare(strict_types=1);
 
 namespace FrankenPress\Cli\Apply;
 
-use FrankenPress\Cli\Adapters\The7;
+use FrankenPress\Cli\Adapters\AdapterInterface;
 use RuntimeException;
 
 final class Restorer {
@@ -34,12 +41,13 @@ final class Restorer {
 	public const APPLIED_SHA256_OPTION = 'fp_snapshot_applied_sha256';
 
 	/**
-	 * @param string                              $snapshot_dir  Local directory containing manifest.json + db.sql.gz.
-	 * @param string                              $target_url    home_url() at apply time (where to retarget).
-	 * @param array<int, The7>                    $adapters      Adapter instances; only those listed in manifest.adapters_fired run.
-	 * @param callable                            $wp_runner     fn(string $command, array $assoc_args): mixed — wraps WP_CLI::runcommand for testability.
-	 * @param callable                            $option_reader fn(string $key): mixed — wraps get_option for testability.
-	 * @param callable                            $option_writer fn(string $key, mixed $value, bool $autoload): bool — wraps update_option.
+	 * @param string                       $snapshot_dir   Local directory with manifest.json + content.xml.gz + options.json.
+	 * @param string                       $target_url     home_url() at apply time.
+	 * @param array<int, AdapterInterface> $adapters       Registered adapters (must match manifest.adapters_fired by name).
+	 * @param callable                     $wp_runner      fn(string $cmd, array $assoc): mixed — wraps WP_CLI::runcommand.
+	 * @param callable                     $option_reader  fn(string $key): mixed.
+	 * @param callable                     $option_writer  fn(string $key, mixed $value, bool $autoload): bool.
+	 * @param callable                     $theme_mod_set  fn(string $stylesheet, string $key, mixed $value): void.
 	 */
 	public function __construct(
 		private string $snapshot_dir,
@@ -48,45 +56,54 @@ final class Restorer {
 		private $wp_runner,
 		private $option_reader,
 		private $option_writer,
+		private $theme_mod_set,
 	) {}
 
 	/**
-	 * Apply the snapshot. Returns:
+	 * Apply the snapshot. Returns "applied" or "skipped".
 	 *
-	 *   "applied"  — the SQL was imported and adapters fired.
-	 *   "skipped"  — idempotency markers already matched; nothing done.
-	 *
-	 * Throws RuntimeException on integrity / IO failure.
+	 * @throws RuntimeException on integrity / IO failure.
 	 */
 	public function apply(): string {
-		$manifest     = $this->read_manifest();
-		$id           = (string) ( $manifest['id'] ?? '' );
-		$expected_sha = (string) ( $manifest['contents']['db_sha256'] ?? '' );
+		$manifest = $this->read_manifest();
+		$id       = (string) ( $manifest['id'] ?? '' );
 
+		$expected_sha = (string) ( $manifest['contents']['wxr_sha256'] ?? '' );
 		if ( '' === $id || '' === $expected_sha ) {
-			throw new RuntimeException( 'manifest is missing required fields (id, contents.db_sha256)' );
+			throw new RuntimeException( 'manifest is missing required fields (id, contents.wxr_sha256)' );
+		}
+
+		$schema = (string) ( $manifest['schema'] ?? '' );
+		if ( 'fp.snapshot/v2' !== $schema ) {
+			throw new RuntimeException( "manifest schema {$schema} is not supported by this fp build (accepts fp.snapshot/v2)" );
 		}
 
 		if ( $this->already_applied( $id, $expected_sha ) ) {
 			return 'skipped';
 		}
 
-		$db_path = $this->snapshot_dir . '/db.sql.gz';
-		$this->verify_dump( $db_path, $expected_sha );
+		$wxr_path = $this->snapshot_dir . '/content.xml.gz';
+		$this->verify_blob( $wxr_path, $expected_sha );
 
+		// Stage 1: import the WXR.
+		$this->import_wxr( $wxr_path );
+
+		// Stage 2: apply the scoped options.
+		$this->apply_options();
+
+		// Stage 3: search-replace URLs in the imported content.
 		$source_url = (string) ( $manifest['source']['site_url'] ?? '' );
-
-		$this->import_dump( $db_path );
-
 		if ( '' !== $source_url && $source_url !== $this->target_url ) {
 			$this->retarget_urls( $source_url, $this->target_url );
 		}
 
+		// Stage 4: adapter post_apply hooks.
 		$this->fire_adapters(
 			(array) ( $manifest['adapters_fired'] ?? array() ),
 			(array) ( $manifest['adapter_state'] ?? array() )
 		);
 
+		// Stage 5: idempotency markers.
 		( $this->option_writer )( self::APPLIED_REF_OPTION, $id, true );
 		( $this->option_writer )( self::APPLIED_SHA256_OPTION, $expected_sha, true );
 
@@ -118,58 +135,108 @@ final class Restorer {
 		return $id === $prior_ref && $sha256 === $prior_sha;
 	}
 
-	private function verify_dump( string $path, string $expected_sha ): void {
+	private function verify_blob( string $path, string $expected_sha ): void {
 		if ( ! is_file( $path ) ) {
-			throw new RuntimeException( "db.sql.gz not found at {$path}" );
+			throw new RuntimeException( "content.xml.gz not found at {$path}" );
 		}
 		$actual = hash_file( 'sha256', $path );
 		if ( $actual !== $expected_sha ) {
 			throw new RuntimeException(
-				"db.sql.gz integrity check failed: manifest says {$expected_sha}, actual {$actual}"
+				"content.xml.gz integrity check failed: manifest says {$expected_sha}, actual {$actual}"
 			);
 		}
 	}
 
-	private function import_dump( string $gz_path ): void {
-		// `wp db import -` reads from stdin. WP_CLI::runcommand doesn't
-		// give us a stdin pipe; the cleanest route is to gunzip to a
-		// temp file then `wp db import <tmpfile>`.
-		$tmp = tempnam( sys_get_temp_dir(), 'fp-snapshot-' );
+	/**
+	 * Run the WP-Importer against content.xml.gz. The importer plugin
+	 * is the canonical WordPress mechanism for ingesting WXR; it
+	 * handles ID remapping, term dedup, attachment refs, etc.
+	 *
+	 * `--authors=skip` because designer-side WXR exports include the
+	 * designer's user as the post_author; we don't want to ship user
+	 * accounts. `wp post` calls preserve existing post authors if the
+	 * referenced user doesn't exist.
+	 */
+	private function import_wxr( string $gz_path ): void {
+		// Decompress to a tmp .xml file. wp import expects a path.
+		$tmp = tempnam( sys_get_temp_dir(), 'fp-wxr-' );
 		if ( false === $tmp ) {
-			throw new RuntimeException( 'could not create temp file for SQL import' );
+			throw new RuntimeException( 'could not create temp file for WXR' );
 		}
+		$xml_path = $tmp . '.xml';
 		try {
 			$gz = gzopen( $gz_path, 'rb' );
 			if ( false === $gz ) {
 				throw new RuntimeException( "could not gzopen {$gz_path}" );
 			}
-			$fh = fopen( $tmp, 'wb' );
-			if ( false === $fh ) {
+			$out = fopen( $xml_path, 'wb' );
+			if ( false === $out ) {
 				gzclose( $gz );
-				throw new RuntimeException( "could not open temp file {$tmp}" );
+				throw new RuntimeException( "could not open {$xml_path}" );
 			}
 			while ( ! gzeof( $gz ) ) {
-				$chunk = gzread( $gz, 1024 * 1024 );
+				$chunk = gzread( $gz, 64 * 1024 );
 				if ( false === $chunk || '' === $chunk ) {
 					break;
 				}
-				fwrite( $fh, $chunk );
+				fwrite( $out, $chunk );
 			}
-			fclose( $fh );
+			fclose( $out );
 			gzclose( $gz );
 
-			( $this->wp_runner )( "db import {$tmp}", array() );
+			// Ensure WP-Importer is installed + active. `wp plugin install
+			// wordpress-importer --activate` is idempotent.
+			( $this->wp_runner )( 'plugin install wordpress-importer --activate', array() );
+
+			( $this->wp_runner )(
+				sprintf( 'import %s --authors=skip --skip=image_resize', escapeshellarg( $xml_path ) ),
+				array()
+			);
 		} finally {
+			if ( file_exists( $xml_path ) ) {
+				unlink( $xml_path );
+			}
 			if ( file_exists( $tmp ) ) {
 				unlink( $tmp );
 			}
 		}
 	}
 
+	/**
+	 * Apply the options.json sidecar — `update_option` for each entry,
+	 * `set_theme_mod` for each theme_mods entry.
+	 */
+	private function apply_options(): void {
+		$path = $this->snapshot_dir . '/options.json';
+		if ( ! is_file( $path ) ) {
+			return;
+		}
+		$raw = file_get_contents( $path );
+		if ( false === $raw || '' === $raw ) {
+			return;
+		}
+		$payload = json_decode( $raw, true );
+		if ( ! is_array( $payload ) ) {
+			return;
+		}
+
+		$options = (array) ( $payload['options'] ?? array() );
+		foreach ( $options as $key => $value ) {
+			( $this->option_writer )( (string) $key, $value, true );
+		}
+
+		$theme_mods = (array) ( $payload['theme_mods'] ?? array() );
+		foreach ( $theme_mods as $stylesheet => $mods ) {
+			if ( ! is_array( $mods ) ) {
+				continue;
+			}
+			foreach ( $mods as $key => $value ) {
+				( $this->theme_mod_set )( (string) $stylesheet, (string) $key, $value );
+			}
+		}
+	}
+
 	private function retarget_urls( string $source_url, string $target_url ): void {
-		// wp search-replace handles serialised PHP correctly (deserialises,
-		// replaces, re-serialises) — the only safe way to rewrite URLs
-		// inside option_value / postmeta blobs.
 		( $this->wp_runner )(
 			sprintf(
 				'search-replace %s %s --all-tables --report-changed-only',
@@ -181,17 +248,17 @@ final class Restorer {
 	}
 
 	/**
-	 * @param array<int, string>           $adapters_fired
+	 * @param array<int, string>                  $adapters_fired
 	 * @param array<string, array<string, mixed>> $adapter_state
 	 */
 	private function fire_adapters( array $adapters_fired, array $adapter_state ): void {
 		foreach ( $this->adapters as $adapter ) {
-			$name = $adapter::NAME;
+			$name = $adapter->name();
 			if ( ! in_array( $name, $adapters_fired, true ) ) {
 				continue;
 			}
 			$state = $adapter_state[ $name ] ?? array();
-			$adapter->post_restore( $state );
+			$adapter->post_apply( $state );
 		}
 	}
 }
