@@ -2,8 +2,8 @@
 /**
  * Plugin Name:  FrankenPress mu-plugin
  * Plugin URI:   https://github.com/frankenpress/mu-plugin
- * Description:  Platform-essential WordPress glue for the FrankenPress stack: S3-uploads bootstrap, Souin cache invalidator, Site Health adjustments for the immutable-image lockdown, and SMTP mailer for wp_mail.
- * Version:      0.3.0
+ * Description:  Platform-essential WordPress glue for the FrankenPress stack: S3-uploads bootstrap, Souin cache invalidator, Site Health adjustments for the immutable-image lockdown, SMTP mailer for wp_mail, and the `wp fp` snapshot/apply WP-CLI subcommands.
+ * Version:      0.7.0
  * Author:       FrankenPress
  * Author URI:   https://frankenpress.com
  * License:      Apache-2.0

@@ -12,9 +12,8 @@ namespace FrankenPress;
 /**
  * Wires the platform-essential components into WordPress hooks.
  *
- * Four components, all platform-housekeeping for the FrankenPress
- * model — anything beyond this is "optional" by the platform's
- * baseline definition:
+ * Four request-path components plus one off-request-path CLI surface,
+ * all platform-housekeeping for the FrankenPress model:
  *
  *   - {@see S3UploadsBootstrap}: configure humanmade/s3-uploads from env
  *     vars, refuse uploads if S3 isn't fully wired (vs silently writing
@@ -31,6 +30,11 @@ namespace FrankenPress;
  *   - {@see SMTPMailer}: wire the global PHPMailer to send via SMTP
  *     when `FP_SMTP_HOST` is set. The runtime image ships no MTA,
  *     so without this every `wp_mail()` call silently fails.
+ *   - {@see \FrankenPress\Cli\Command}: registers `wp fp` WP-CLI
+ *     subcommands (snapshot + apply, Phase 0 of the FrankenPress
+ *     promotion CLI). Only loads under WP_CLI — zero overhead on web
+ *     requests. Off the request path; doesn't count against the
+ *     request-path component baseline.
  *
  * Each component's constructor is side-effect-free; the actual hook
  * registration happens in `bootstrap()`. This makes the components
@@ -43,5 +47,9 @@ final class MuPlugin {
 		( new SouinInvalidator() )->bootstrap();
 		( new SiteHealth() )->bootstrap();
 		( new SMTPMailer() )->bootstrap();
+
+		if ( defined( 'WP_CLI' ) && constant( 'WP_CLI' ) && class_exists( '\\WP_CLI' ) ) {
+			\WP_CLI::add_command( 'fp', \FrankenPress\Cli\Command::class );
+		}
 	}
 }
