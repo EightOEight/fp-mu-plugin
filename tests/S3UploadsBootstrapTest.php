@@ -20,11 +20,24 @@ final class S3UploadsBootstrapTest extends TestCase {
 	/** @var array<string, string> */
 	private array $env_backup = array();
 
+	private const TRACKED_ENV = array(
+		'FP_S3_BUCKET',
+		'FP_S3_KEY',
+		'FP_S3_SECRET',
+		'FP_S3_REGION',
+		'FP_S3_BUCKET_URL',
+		'FP_S3_ENDPOINT',
+		'FP_S3_OBJECT_ACL',
+		'FP_S3_DISABLED',
+		'KUBERNETES_SERVICE_HOST',
+	);
+
 	protected function setUp(): void {
 		parent::setUp();
 		Monkey\setUp();
-		// Snapshot then clear all FP_S3_* env vars for test isolation.
-		foreach ( array( 'FP_S3_BUCKET', 'FP_S3_KEY', 'FP_S3_SECRET', 'FP_S3_REGION', 'FP_S3_BUCKET_URL', 'FP_S3_ENDPOINT', 'FP_S3_OBJECT_ACL', 'FP_S3_DISABLED' ) as $key ) {
+		// Snapshot then clear tracked env vars for test isolation. Tests
+		// that need an in-cluster default re-set KUBERNETES_SERVICE_HOST.
+		foreach ( self::TRACKED_ENV as $key ) {
 			$value = getenv( $key );
 			if ( false !== $value ) {
 				$this->env_backup[ $key ] = $value;
@@ -34,7 +47,7 @@ final class S3UploadsBootstrapTest extends TestCase {
 	}
 
 	protected function tearDown(): void {
-		foreach ( array_keys( array_flip( array( 'FP_S3_BUCKET', 'FP_S3_KEY', 'FP_S3_SECRET', 'FP_S3_REGION', 'FP_S3_BUCKET_URL', 'FP_S3_ENDPOINT', 'FP_S3_OBJECT_ACL', 'FP_S3_DISABLED' ) ) ) as $key ) {
+		foreach ( self::TRACKED_ENV as $key ) {
 			if ( isset( $this->env_backup[ $key ] ) ) {
 				putenv( $key . '=' . $this->env_backup[ $key ] );
 			} else {
@@ -57,7 +70,11 @@ final class S3UploadsBootstrapTest extends TestCase {
 	}
 
 	public function test_missing_required_env_refuses_uploads(): void {
-		// No FP_S3_* env vars set.
+		// Simulate in-cluster so the K8s-aware default leaves the
+		// bootstrap enabled; without FP_S3_* env vars it should refuse
+		// uploads rather than silently fall back to local disk.
+		putenv( 'KUBERNETES_SERVICE_HOST=10.0.0.1' );
+
 		Filters\expectAdded( 'wp_handle_upload_prefilter' )->once();
 		Filters\expectAdded( 'wp_handle_sideload_prefilter' )->once();
 
@@ -74,20 +91,45 @@ final class S3UploadsBootstrapTest extends TestCase {
 		$this->assertFalse( $bootstrap->s3_uploads_loaded() );
 	}
 
-	public function test_disabled_truthy_values(): void {
+	public function test_explicit_truthy_and_falsy_values(): void {
 		$bootstrap = new S3UploadsBootstrap();
 		$method    = new ReflectionMethod( $bootstrap, 'is_disabled' );
-		$method->setAccessible( true );
 
 		foreach ( array( '1', 'true', 'TRUE', 'yes', 'on' ) as $truthy ) {
 			putenv( 'FP_S3_DISABLED=' . $truthy );
 			$this->assertTrue( $method->invoke( $bootstrap ), "Expected '$truthy' to be disabled" );
 		}
 
-		foreach ( array( '', '0', 'false', 'no', 'off' ) as $falsy ) {
+		// Explicit falsy values force-enable even out-of-cluster (no
+		// KUBERNETES_SERVICE_HOST set in this test).
+		foreach ( array( '0', 'false', 'no', 'off' ) as $falsy ) {
 			putenv( 'FP_S3_DISABLED=' . $falsy );
-			$this->assertFalse( $method->invoke( $bootstrap ), "Expected '$falsy' to be enabled" );
+			$this->assertFalse( $method->invoke( $bootstrap ), "Expected '$falsy' to force-enable" );
 		}
+	}
+
+	public function test_unset_falls_back_to_kubernetes_gate(): void {
+		$bootstrap = new S3UploadsBootstrap();
+		$method    = new ReflectionMethod( $bootstrap, 'is_disabled' );
+
+		// FP_S3_DISABLED unset (cleared in setUp).
+		putenv( 'KUBERNETES_SERVICE_HOST=10.0.0.1' );
+		$this->assertFalse( $method->invoke( $bootstrap ), 'In-cluster default should enable the bootstrap' );
+
+		putenv( 'KUBERNETES_SERVICE_HOST' );
+		$this->assertTrue( $method->invoke( $bootstrap ), 'Out-of-cluster default should disable the bootstrap' );
+	}
+
+	public function test_empty_string_treated_as_unset(): void {
+		$bootstrap = new S3UploadsBootstrap();
+		$method    = new ReflectionMethod( $bootstrap, 'is_disabled' );
+
+		putenv( 'FP_S3_DISABLED=' );
+		putenv( 'KUBERNETES_SERVICE_HOST=10.0.0.1' );
+		$this->assertFalse( $method->invoke( $bootstrap ), 'Empty FP_S3_DISABLED in-cluster → enabled' );
+
+		putenv( 'KUBERNETES_SERVICE_HOST' );
+		$this->assertTrue( $method->invoke( $bootstrap ), 'Empty FP_S3_DISABLED out-of-cluster → disabled' );
 	}
 
 	public function test_env_vars_map_to_constants(): void {
@@ -104,7 +146,6 @@ final class S3UploadsBootstrapTest extends TestCase {
 
 		$bootstrap = new S3UploadsBootstrap();
 		$method    = new ReflectionMethod( $bootstrap, 'define_constants_from_env' );
-		$method->setAccessible( true );
 		$method->invoke( $bootstrap );
 
 		$this->assertSame( 'my-bucket', constant( 'S3_UPLOADS_BUCKET' ) );
@@ -155,7 +196,6 @@ final class S3UploadsBootstrapTest extends TestCase {
 		$ref       = new \ReflectionClass( S3UploadsBootstrap::class );
 		$bootstrap = $ref->newInstanceWithoutConstructor();
 		$method    = new ReflectionMethod( $bootstrap, 'register_endpoint_filter' );
-		$method->setAccessible( true );
 
 		$captured = null;
 		Filters\expectAdded( 's3_uploads_s3_client_params' )

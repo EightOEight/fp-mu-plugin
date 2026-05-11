@@ -47,7 +47,7 @@ All env vars are optional unless flagged required.
 | `FP_S3_BUCKET_URL` | (optional) | Public CDN URL for served media (e.g. `https://cdn.example.com`). Auto-sets `WP_CONTENT_URL` if undefined. |
 | `FP_S3_ENDPOINT` | (optional) | Custom S3-compatible endpoint (MinIO, R2, GCS XML API). Empty for AWS S3. |
 | `FP_S3_OBJECT_ACL` | (empty — no ACL header sent) | Optional S3 object ACL (`public-read`, `private`, `authenticated-read`). Leave unset for buckets with **Object Ownership = "Bucket owner enforced"** (the AWS default for new buckets since April 2023, ACLs disabled). Sending an ACL on such a bucket aborts the upload and leaves a **0-byte object** behind. Set to `public-read` to opt in for ACL-enabled buckets. |
-| `FP_S3_DISABLED` | `false` | Set truthy (`1`, `true`, `yes`, `on`) to disable S3 entirely. **Local dev only — never in production**, because container disks are ephemeral and inconsistent across replicas. |
+| `FP_S3_DISABLED` | auto: enabled in-cluster, disabled out-of-cluster | Tri-state. Truthy (`1`/`true`/`yes`/`on`) skips the bootstrap. Falsy (`0`/`false`/`no`/`off`) forces it on (e.g. to exercise the S3 path locally against MinIO). Unset/empty falls back to the default, which gates on `KUBERNETES_SERVICE_HOST` — enabled in-cluster, disabled out-of-cluster so admin install flows that `unzip_file()` the upload dir don't hit the `s3://` stream wrapper. **Production always sees the var unset and `KUBERNETES_SERVICE_HOST` set, so S3 stays on by default in cluster.** |
 
 If any required var is missing, the bootstrap registers a
 `wp_handle_upload_prefilter` filter that **rejects every upload** with a
