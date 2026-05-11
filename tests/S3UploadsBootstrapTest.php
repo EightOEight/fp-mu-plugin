@@ -146,7 +146,6 @@ final class S3UploadsBootstrapTest extends TestCase {
 
 		$bootstrap = new S3UploadsBootstrap();
 		$method    = new ReflectionMethod( $bootstrap, 'define_constants_from_env' );
-		$method->setAccessible( true );
 		$method->invoke( $bootstrap );
 
 		$this->assertSame( 'my-bucket', constant( 'S3_UPLOADS_BUCKET' ) );
@@ -197,7 +196,6 @@ final class S3UploadsBootstrapTest extends TestCase {
 		$ref       = new \ReflectionClass( S3UploadsBootstrap::class );
 		$bootstrap = $ref->newInstanceWithoutConstructor();
 		$method    = new ReflectionMethod( $bootstrap, 'register_endpoint_filter' );
-		$method->setAccessible( true );
 
 		$captured = null;
 		Filters\expectAdded( 's3_uploads_s3_client_params' )
