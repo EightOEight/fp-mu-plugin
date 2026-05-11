@@ -38,10 +38,18 @@
  *                                  April 2023). Sending an ACL on such
  *                                  a bucket aborts the upload mid-PUT
  *                                  and leaves a 0-byte object behind.
- *   FP_S3_DISABLED     (optional)  Truthy to disable the bootstrap and
- *                                  fall back to whatever upload handler
- *                                  WP would use (i.e. local disk).
- *                                  ONLY for local dev — never in prod.
+ *   FP_S3_DISABLED     (optional)  Tri-state. Truthy ("1"/"true"/"yes"/
+ *                                  "on") to disable the bootstrap.
+ *                                  Falsy ("0"/"false"/"no"/"off") to
+ *                                  force it on. Unset/empty to fall
+ *                                  back to the K8s-aware default:
+ *                                  enabled in-cluster, disabled
+ *                                  out-of-cluster (KUBERNETES_SERVICE_HOST
+ *                                  unset → local dev → uploads land on
+ *                                  local disk, so admin install flows
+ *                                  that ZipArchive/unzip_file the
+ *                                  upload dir don't hit the s3://
+ *                                  stream wrapper).
  *
  * @package FrankenPress
  */
@@ -170,17 +178,39 @@ final class S3UploadsBootstrap {
 	}
 
 	/**
-	 * Was the bootstrap explicitly disabled?
+	 * Whether the bootstrap should bail without configuring s3-uploads.
+	 *
+	 * Tri-state with a K8s-aware default:
+	 *
+	 *   `FP_S3_DISABLED` truthy ("1"/"true"/"yes"/"on")
+	 *      → disabled (skip the bootstrap)
+	 *   `FP_S3_DISABLED` falsy ("0"/"false"/"no"/"off")
+	 *      → enabled (force the bootstrap on, e.g. to exercise the S3
+	 *        path locally against MinIO)
+	 *   `FP_S3_DISABLED` unset / empty
+	 *      → default to `KUBERNETES_SERVICE_HOST` (kubelet-injected on
+	 *        every pod): in-cluster the bootstrap runs; out-of-cluster
+	 *        (docker-compose, bare local) it skips, so admin install
+	 *        flows that ZipArchive/unzip_file the upload dir don't hit
+	 *        the `s3://` stream wrapper (which doesn't support every
+	 *        operation those flows need).
+	 *
+	 * A PHP constant `FP_S3_DISABLED` overrides the env var entirely.
 	 */
 	private function is_disabled(): bool {
-		if ( defined( 'FP_S3_DISABLED' ) && (bool) constant( 'FP_S3_DISABLED' ) ) {
-			return true;
+		// Explicit override via PHP constant.
+		if ( defined( 'FP_S3_DISABLED' ) ) {
+			return (bool) constant( 'FP_S3_DISABLED' );
 		}
+
+		// Explicit override via environment variable.
 		$env = getenv( 'FP_S3_DISABLED' );
-		if ( false === $env || '' === $env ) {
-			return false;
+		if ( false !== $env && '' !== $env ) {
+			return ! in_array( strtolower( (string) $env ), array( '0', 'false', 'no', 'off' ), true );
 		}
-		return ! in_array( strtolower( (string) $env ), array( '0', 'false', 'no', 'off' ), true );
+
+		// No explicit setting — default depends on whether we're in K8s.
+		return ! getenv( 'KUBERNETES_SERVICE_HOST' );
 	}
 
 	/**
