@@ -122,11 +122,17 @@ final class WxrCapturer {
 	 * @param array<int, int> $ids
 	 */
 	private function run_export( array $ids, string $output_path ): void {
-		$args = array(
-			'post__in' => implode( ',', $ids ),
-			'filename' => $output_path,
+		// WP_CLI::runcommand's second argument is its OWN options dict
+		// (return / launch / parse / etc.), NOT a mapping that becomes
+		// wp-cli flags. Flags have to be in the command string itself.
+		// Caller (Capturer) constructs the wp_runner closure to forward
+		// runcommand options; we build the flag string here.
+		$command = sprintf(
+			'export --post__in=%s --filename=%s',
+			escapeshellarg( implode( ',', $ids ) ),
+			escapeshellarg( $output_path )
 		);
-		( $this->wp_runner )( 'export', $args );
+		( $this->wp_runner )( $command, array() );
 		if ( ! is_file( $output_path ) ) {
 			throw new RuntimeException( "wxr-capturer: wp export ran but produced no file at {$output_path}" );
 		}
