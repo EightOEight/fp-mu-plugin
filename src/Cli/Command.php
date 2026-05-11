@@ -75,8 +75,16 @@ final class Command {
 			return \WP_CLI::runcommand(
 				$command,
 				array(
-					'return' => 'all',
-					'launch' => false,
+					'return'     => 'all',
+					// launch=true → spawn a subprocess per inner wp-cli
+					// invocation. Required because some wp-cli commands
+					// (notably `wp export`) call exit() internally; with
+					// launch=false they'd terminate the outer wp fp
+					// process silently mid-flight, leaving partial output
+					// + no diagnostic. Subprocess isolation is the
+					// safety boundary.
+					'launch'     => true,
+					'exit_error' => false,
 				) + $assoc
 			);
 		};
