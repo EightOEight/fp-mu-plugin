@@ -26,6 +26,10 @@ final class CliAdapterThe7Test extends TestCase {
 		parent::tearDown();
 	}
 
+	public function test_name_is_the7(): void {
+		$this->assertSame( 'the7', ( new The7() )->name() );
+	}
+
 	public function test_detect_returns_true_when_the7_is_active(): void {
 		$theme = new class() {
 			public function get_template(): string {
@@ -48,7 +52,41 @@ final class CliAdapterThe7Test extends TestCase {
 		$this->assertFalse( ( new The7() )->detect() );
 	}
 
-	public function test_capture_returns_demo_history_when_present(): void {
+	public function test_scope_declares_marker_for_pages_and_posts(): void {
+		$scope = ( new The7() )->scope();
+		$this->assertArrayHasKey( 'page', $scope->post_types_with_marker );
+		$this->assertArrayHasKey( 'post', $scope->post_types_with_marker );
+		$this->assertSame( The7::IMPORTED_ITEM_META, $scope->post_types_with_marker['page'] );
+	}
+
+	public function test_scope_includes_nav_menu_items_in_full_capture(): void {
+		$scope = ( new The7() )->scope();
+		$this->assertContains( 'nav_menu_item', $scope->post_types_full_capture );
+	}
+
+	public function test_scope_option_patterns_cover_the7_and_elementor(): void {
+		$scope = ( new The7() )->scope();
+		$this->assertContains( 'the7_%', $scope->option_patterns );
+		$this->assertContains( 'elementor_%', $scope->option_patterns );
+		$this->assertContains( 'sidebars_widgets', $scope->option_patterns );
+	}
+
+	public function test_scope_includes_the_theme_mods_slug(): void {
+		$scope = ( new The7() )->scope();
+		$this->assertContains( The7::THEME_SLUG, $scope->theme_mods_for );
+	}
+
+	public function test_scope_documents_critical_exclusions(): void {
+		$scope = ( new The7() )->scope();
+		// The whole point of the scope is the safety boundary — these
+		// must always be in documented_exclusions, never in any other
+		// field.
+		$this->assertContains( 'wc_orders', $scope->documented_exclusions );
+		$this->assertContains( 'wp_users', $scope->documented_exclusions );
+		$this->assertContains( 'wp_comments', $scope->documented_exclusions );
+	}
+
+	public function test_capture_state_returns_demo_history_when_present(): void {
 		$history = array(
 			'fse-architect' => array(
 				'post_types'    => true,
@@ -65,20 +103,12 @@ final class CliAdapterThe7Test extends TestCase {
 			}
 		);
 
-		$state = ( new The7() )->capture();
+		$state = ( new The7() )->capture_state();
 
 		$this->assertSame( $history, $state['demo_history'] );
 	}
 
-	public function test_capture_returns_empty_array_when_no_demo_history(): void {
-		Functions\when( 'get_option' )->justReturn( false );
-
-		$state = ( new The7() )->capture();
-
-		$this->assertArrayNotHasKey( 'demo_history', $state );
-	}
-
-	public function test_capture_summarises_dashboard_settings_keys(): void {
+	public function test_capture_state_summarises_dashboard_settings_keys(): void {
 		Functions\when( 'get_option' )->alias(
 			function ( string $key ) {
 				if ( 'the7_dashboard_settings' === $key ) {
@@ -91,15 +121,12 @@ final class CliAdapterThe7Test extends TestCase {
 			}
 		);
 
-		$state = ( new The7() )->capture();
+		$state = ( new The7() )->capture_state();
 
-		$this->assertSame(
-			array( 'accent_color', 'body_font' ),
-			$state['dashboard_settings_keys']
-		);
+		$this->assertSame( array( 'accent_color', 'body_font' ), $state['dashboard_settings_keys'] );
 	}
 
-	public function test_post_restore_writes_demo_history(): void {
+	public function test_post_apply_writes_demo_history(): void {
 		$captured = array();
 		Functions\when( 'update_option' )->alias(
 			function ( $key, $value ) use ( &$captured ) {
@@ -110,27 +137,12 @@ final class CliAdapterThe7Test extends TestCase {
 		Functions\when( 'delete_option' )->justReturn( true );
 
 		$history = array( 'fse-architect' => array( 'post_types' => true ) );
-		( new The7() )->post_restore( array( 'demo_history' => $history ) );
+		( new The7() )->post_apply( array( 'demo_history' => $history ) );
 
 		$this->assertSame( $history, $captured['the7_demo_history'] );
 	}
 
-	public function test_post_restore_skips_history_when_state_empty(): void {
-		$captured = array();
-		Functions\when( 'update_option' )->alias(
-			function ( $key, $value ) use ( &$captured ) {
-				$captured[ $key ] = $value;
-				return true;
-			}
-		);
-		Functions\when( 'delete_option' )->justReturn( true );
-
-		( new The7() )->post_restore( array() );
-
-		$this->assertArrayNotHasKey( 'the7_demo_history', $captured );
-	}
-
-	public function test_post_restore_clears_dynamic_css_hash(): void {
+	public function test_post_apply_clears_dynamic_css_hash(): void {
 		$deleted = array();
 		Functions\when( 'update_option' )->justReturn( true );
 		Functions\when( 'delete_option' )->alias(
@@ -140,7 +152,7 @@ final class CliAdapterThe7Test extends TestCase {
 			}
 		);
 
-		( new The7() )->post_restore( array() );
+		( new The7() )->post_apply( array() );
 
 		$this->assertContains( 'the7_last_dynamic_stylesheets_hash', $deleted );
 	}

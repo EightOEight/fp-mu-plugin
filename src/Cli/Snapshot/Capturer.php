@@ -1,29 +1,36 @@
 <?php
 /**
- * Snapshot capturer — orchestrates `wp fp snapshot`.
+ * Snapshot capturer — orchestrates `wp fp snapshot` in fp.snapshot/v2.
  *
- * Reads local site state and writes a snapshot directory containing:
+ * Produces a snapshot directory containing:
  *
- *   manifest.yaml          — fp.snapshot/v1 manifest (committed to git;
- *                            canonical form, cosign-signed in Phase 2)
- *   manifest.json          — same data in JSON. Apply-side reads this
- *                            so we don't need a PHP YAML parser in the
- *                            runtime image. Phase 1 Go binary uses YAML.
- *   composer-patch.json    — proposed `composer require` set (committed)
- *   db.sql.gz              — sanitised mariadb dump (blob; gitignored)
- *   uploads-manifest.txt   — list of files under wp-content/uploads/
- *                            with size + sha256 (committed in Phase 0;
- *                            Phase 2 replaces with S3 sync of the actual
- *                            bytes)
+ *   manifest.yaml         — fp.snapshot/v2 manifest (canonical form;
+ *                           cosign-signed in Phase 5)
+ *   manifest.json         — JSON sidecar for the apply path
+ *   content.xml.gz        — WXR content (posts, postmeta, terms, menus,
+ *                           attachments) scoped to fired adapters
+ *   options.json          — scoped wp_options + theme_mods JSON sidecar
+ *   composer-patch.json   — proposed `composer require` set
+ *   uploads-manifest.txt  — sha256 + size per file under uploads/
  *
- * Side effects: runs `wp db export -` against the loaded site, walks
- * the filesystem under WP_CONTENT_DIR/uploads, calls adapter
- * `capture()` methods. All file writes are confined to the output dir.
+ * Capture flow:
  *
- * Testability seam: the `db_exporter` constructor argument is a
- * callable that takes a stream pointer and writes sanitised SQL to it,
- * letting unit tests substitute a canned dump for the real
- * `wp db export -` invocation.
+ *   1. For each registered adapter, run detect()
+ *   2. Merge the scope of every fired adapter into one combined scope
+ *   3. Refuse to produce an empty snapshot (no fired adapters →
+ *      explicit error; designer needs to install + activate a theme
+ *      with a registered adapter before snapshotting)
+ *   4. WxrCapturer runs `wp export` against the combined post-id set
+ *   5. OptionsCapturer dumps scoped options + theme_mods to JSON
+ *   6. PluginInspector emits composer-patch.json
+ *   7. Walk uploads/ → uploads-manifest.txt
+ *   8. Each fired adapter contributes a capture_state() blob
+ *   9. Emit manifest.yaml + manifest.json
+ *
+ * Note: no `wp db export` anywhere. No SQL dump. No Sanitiser. The
+ * snapshot can only carry rows an adapter declared in scope. By
+ * construction, a WooCommerce store's `wc_orders` table is never
+ * touched.
  *
  * @package FrankenPress\Cli\Snapshot
  */
@@ -32,25 +39,25 @@ declare(strict_types=1);
 
 namespace FrankenPress\Cli\Snapshot;
 
-use FrankenPress\Cli\Adapters\The7;
+use FrankenPress\Cli\Adapters\AdapterInterface;
 use RuntimeException;
 
 final class Capturer {
 
 	/**
-	 * @param string                    $output_dir         Absolute path to where the snapshot directory will be written (created if missing; emptied if non-empty).
-	 * @param string                    $slug               Designer-chosen short identifier (e.g. "architect-2").
-	 * @param string                    $note               Free-form designer note (goes into manifest.notes).
-	 * @param string                    $plugin_dir         WP_PLUGIN_DIR.
-	 * @param string                    $uploads_dir        WP_CONTENT_DIR/uploads.
-	 * @param string                    $composer_json_path Site composer.json path.
-	 * @param array<int, string>        $active_plugins     active_plugins option value.
-	 * @param string                    $site_url           home_url() at capture time.
-	 * @param string                    $wp_version         WordPress version string.
-	 * @param string                    $active_theme       Stylesheet slug.
-	 * @param Sanitiser                 $sanitiser          SQL line sanitiser.
-	 * @param array<int, The7>          $adapters           Premium-theme adapters (Phase 0: just [The7] when detect()ed).
-	 * @param callable                  $db_exporter        Function ($fh): void — write raw SQL dump to $fh. Production caller passes a closure that invokes `wp db export - --extended-insert=0`.
+	 * @param string                            $output_dir         Absolute path where the snapshot directory is written.
+	 * @param string                            $slug               Designer-chosen short id.
+	 * @param string                            $note               Optional designer note.
+	 * @param string                            $plugin_dir         WP_PLUGIN_DIR.
+	 * @param string                            $uploads_dir        WP_CONTENT_DIR/uploads.
+	 * @param string                            $composer_json_path Site composer.json path.
+	 * @param array<int, string>                $active_plugins     active_plugins option value.
+	 * @param string                            $site_url           home_url() at capture time.
+	 * @param string                            $wp_version         WordPress version string.
+	 * @param string                            $active_theme       Stylesheet slug.
+	 * @param array<int, AdapterInterface>      $adapters           Registered adapters; only those that detect() get to contribute.
+	 * @param WxrCapturer                       $wxr                WXR capturer (injected so tests can swap the wp-cli + sql runners).
+	 * @param OptionsCapturer                   $opts               Options capturer (injected for the same reason).
 	 */
 	public function __construct(
 		private string $output_dir,
@@ -63,20 +70,49 @@ final class Capturer {
 		private string $site_url,
 		private string $wp_version,
 		private string $active_theme,
-		private Sanitiser $sanitiser,
 		private array $adapters,
-		private $db_exporter,
+		private WxrCapturer $wxr,
+		private OptionsCapturer $opts,
 	) {}
 
 	/**
-	 * Execute the capture. Returns the absolute path of the written
-	 * manifest.yaml so callers can echo it / link to it.
+	 * Execute the capture. Returns the absolute path of manifest.yaml.
+	 *
+	 * @throws RuntimeException when no adapter fired (an empty snapshot is never produced).
 	 */
 	public function capture(): string {
 		$this->prepare_output_dir();
 
-		$db_path   = $this->output_dir . '/db.sql.gz';
-		$db_sha256 = $this->write_sanitised_dump( $db_path );
+		$fired = array();
+		foreach ( $this->adapters as $a ) {
+			if ( $a->detect() ) {
+				$fired[] = $a;
+			}
+		}
+
+		if ( empty( $fired ) ) {
+			throw new RuntimeException(
+				"no premium-theme adapter detected. fp will not produce an empty snapshot because there's no safe scope to operate on. " .
+				'Activate a theme that ships an adapter (The7, etc.), or extend mu-plugin with a custom adapter, before snapshotting.'
+			);
+		}
+
+		$scope = $fired[0]->scope();
+		for ( $i = 1; $i < count( $fired ); $i++ ) {
+			$scope = $scope->merged_with( $fired[ $i ]->scope() );
+		}
+
+		if ( $scope->is_empty() ) {
+			throw new RuntimeException( 'merged adapter scope is empty; refusing to snapshot' );
+		}
+
+		$wxr_path    = $this->output_dir . '/content.xml.gz';
+		$wxr_summary = $this->wxr->capture( $scope, $wxr_path );
+
+		$options_payload = $this->opts->capture( $scope );
+		$options_json    = json_encode( $options_payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) . "\n";
+		file_put_contents( $this->output_dir . '/options.json', $options_json );
+		$options_sha256 = hash( 'sha256', $options_json );
 
 		$plugins_patch = ( new PluginInspector(
 			$this->plugin_dir,
@@ -89,26 +125,23 @@ final class Capturer {
 		);
 
 		$uploads_manifest = $this->build_uploads_manifest();
-		file_put_contents(
-			$this->output_dir . '/uploads-manifest.txt',
-			$uploads_manifest['text']
-		);
+		file_put_contents( $this->output_dir . '/uploads-manifest.txt', $uploads_manifest['text'] );
 
 		$adapter_state  = array();
 		$adapters_fired = array();
-		foreach ( $this->adapters as $adapter ) {
-			if ( ! $adapter->detect() ) {
-				continue;
-			}
-			$state = $adapter->capture();
+		foreach ( $fired as $a ) {
+			$state = $a->capture_state();
 			if ( ! empty( $state ) ) {
-				$adapter_state[ $adapter::NAME ] = $state;
+				$adapter_state[ $a->name() ] = $state;
 			}
-			$adapters_fired[] = $adapter::NAME;
+			$adapters_fired[] = $a->name();
 		}
 
 		$manifest      = $this->build_manifest(
-			$db_sha256,
+			$scope,
+			$wxr_summary,
+			$options_sha256,
+			count( $options_payload['options'] ),
 			$uploads_manifest,
 			$plugins_patch,
 			$adapters_fired,
@@ -131,8 +164,6 @@ final class Capturer {
 			}
 			return;
 		}
-		// Clear any prior snapshot artefacts in the same dir — we own
-		// the dir contents.
 		$entries = glob( $this->output_dir . '/*' );
 		foreach ( ( false === $entries ? array() : $entries ) as $entry ) {
 			if ( is_file( $entry ) ) {
@@ -142,60 +173,6 @@ final class Capturer {
 	}
 
 	/**
-	 * Stream a raw SQL dump through the sanitiser into a gzipped file.
-	 * Returns the sha256 of the compressed bytes — the manifest pins
-	 * this so the apply side can verify integrity before importing.
-	 */
-	private function write_sanitised_dump( string $gz_path ): string {
-		$raw_path = $this->output_dir . '/db.sql.raw';
-		$fh       = fopen( $raw_path, 'wb' );
-		if ( false === $fh ) {
-			throw new RuntimeException( "could not open {$raw_path} for writing" );
-		}
-
-		try {
-			( $this->db_exporter )( $fh );
-		} finally {
-			fclose( $fh );
-		}
-
-		// Stream the raw dump through the sanitiser into the gzipped output.
-		$in  = fopen( $raw_path, 'rb' );
-		$out = gzopen( $gz_path, 'wb9' );
-		if ( false === $in || false === $out ) {
-			throw new RuntimeException( 'sanitise stream pipeline could not open files' );
-		}
-		try {
-			while ( ! feof( $in ) ) {
-				$line = fgets( $in );
-				if ( false === $line ) {
-					break;
-				}
-				$rstripped = rtrim( $line, "\r\n" );
-				$sanitised = $this->sanitiser->sanitise( $rstripped );
-				if ( null === $sanitised ) {
-					continue;
-				}
-				gzwrite( $out, $sanitised . "\n" );
-			}
-		} finally {
-			fclose( $in );
-			gzclose( $out );
-		}
-		unlink( $raw_path );
-
-		return hash_file( 'sha256', $gz_path );
-	}
-
-	/**
-	 * Walk the uploads dir and produce a manifest line per file:
-	 *
-	 *   <sha256>  <bytes>  <relative-path>
-	 *
-	 * Files under `the7-css/`, `s3-uploads-failures/`, `cache/` are
-	 * excluded — they're env-specific caches that regenerate on first
-	 * request in the apply env.
-	 *
 	 * @return array{text: string, file_count: int, total_bytes: int}
 	 */
 	private function build_uploads_manifest(): array {
@@ -240,25 +217,27 @@ final class Capturer {
 	}
 
 	/**
+	 * @param array{post_count: int, sha256: string}                                                $wxr_summary
+	 * @param array{text: string, file_count: int, total_bytes: int}                                $uploads_manifest
 	 * @param array{pending_requires: array<int, string>, unresolved: array<int, string>, rationale: string} $plugins_patch
-	 * @param array{file_count: int, total_bytes: int} $uploads_manifest
-	 * @param array<int, string> $adapters_fired
-	 * @param array<string, array<string, mixed>> $adapter_state
+	 * @param array<int, string>                                                                    $adapters_fired
+	 * @param array<string, array<string, mixed>>                                                   $adapter_state
 	 */
 	private function build_manifest(
-		string $db_sha256,
+		SnapshotScope $scope,
+		array $wxr_summary,
+		string $options_sha256,
+		int $options_count,
 		array $uploads_manifest,
 		array $plugins_patch,
 		array $adapters_fired,
 		array $adapter_state
 	): Manifest {
-		$id      = $this->generate_id();
-		$created = gmdate( 'Y-m-d\TH:i:s\Z' );
-
+		$id   = $this->generate_id();
 		$data = array(
 			'schema'                 => Manifest::SCHEMA,
 			'id'                     => $id,
-			'created'                => $created,
+			'created'                => gmdate( 'Y-m-d\TH:i:s\Z' ),
 			'source'                 => array(
 				'site_url'     => $this->site_url,
 				'wp_version'   => $this->wp_version,
@@ -268,9 +247,20 @@ final class Capturer {
 				'note' => $this->note,
 			),
 			'adapters_fired'         => $adapters_fired,
+			'scope'                  => array(
+				'post_types_with_marker'  => $scope->post_types_with_marker,
+				'post_types_full_capture' => $scope->post_types_full_capture,
+				'option_patterns'         => $scope->option_patterns,
+				'theme_mods_for'          => $scope->theme_mods_for,
+				'documented_exclusions'   => $scope->documented_exclusions,
+			),
 			'contents'               => array(
-				'db'                  => 'db.sql.gz',
-				'db_sha256'           => $db_sha256,
+				'wxr'                 => 'content.xml.gz',
+				'wxr_sha256'          => $wxr_summary['sha256'],
+				'wxr_post_count'      => $wxr_summary['post_count'],
+				'options'             => 'options.json',
+				'options_sha256'      => $options_sha256,
+				'options_count'       => $options_count,
 				'composer_patch'      => 'composer-patch.json',
 				'uploads_manifest'    => 'uploads-manifest.txt',
 				'uploads_file_count'  => $uploads_manifest['file_count'],
@@ -289,12 +279,6 @@ final class Capturer {
 		return new Manifest( $data );
 	}
 
-	/**
-	 * Produce a snapshot id: lower-cased slug + UTC timestamp, separated
-	 * by `-`. ULIDs would be nicer but pulling in a ULID lib for this
-	 * one field isn't worth it — the timestamp+slug form sorts
-	 * chronologically and is human-readable.
-	 */
 	private function generate_id(): string {
 		$slug = strtolower( preg_replace( '/[^a-z0-9]+/i', '-', $this->slug ) ?? '' );
 		$slug = trim( $slug, '-' );

@@ -31,10 +31,10 @@ declare(strict_types=1);
 
 namespace FrankenPress\Cli;
 
+use FrankenPress\Cli\Adapters\AdapterInterface;
 use FrankenPress\Cli\Adapters\The7;
 use FrankenPress\Cli\Apply\Restorer;
 use FrankenPress\Cli\Snapshot\Capturer;
-use FrankenPress\Cli\Snapshot\Sanitiser;
 use Throwable;
 
 /**
@@ -71,6 +71,27 @@ final class Command {
 		$note       = (string) ( $assoc_args['note'] ?? '' );
 		$output_dir = $this->resolve_output_dir( $assoc_args, $slug );
 
+		$wp_runner  = static function ( string $command, array $assoc ): mixed {
+			return \WP_CLI::runcommand(
+				$command,
+				array(
+					'return' => 'all',
+					'launch' => false,
+				) + $assoc
+			);
+		};
+		$sql_runner = static function ( string $sql ): array {
+			global $wpdb;
+			// SQL is composed by the snapshot capturers from adapter-
+			// declared patterns (e.g. `the7_%`) — not from user input
+			// — so $wpdb->prepare() placeholders don't apply here. The
+			// capturers escape values defensively before composing.
+			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+			$rows = $wpdb->get_results( $sql, ARRAY_A );
+			return is_array( $rows ) ? $rows : array();
+		};
+		$option_get = static fn ( string $key ): mixed => get_option( $key );
+
 		$capturer = new Capturer(
 			$output_dir,
 			$slug,
@@ -82,11 +103,9 @@ final class Command {
 			(string) home_url(),
 			$this->wp_version_safe(),
 			(string) get_option( 'stylesheet', '' ),
-			new Sanitiser(),
 			$this->adapters(),
-			function ( $fh ): void {
-				$this->run_wp_db_export( $fh );
-			}
+			new \FrankenPress\Cli\Snapshot\WxrCapturer( $wp_runner, $sql_runner ),
+			new \FrankenPress\Cli\Snapshot\OptionsCapturer( $sql_runner, $option_get ),
 		);
 
 		try {
@@ -97,7 +116,7 @@ final class Command {
 		}
 
 		\WP_CLI::log( "snapshot written: {$manifest_path}" );
-		\WP_CLI::log( "review the manifest + composer-patch.json, then run:  make promote SLUG={$slug} ENV=stg" );
+		\WP_CLI::log( 'review the manifest + composer-patch.json, then commit web/imports/' . $slug . '/ and open a site-repo PR.' );
 		\WP_CLI::success( 'snapshot complete' );
 	}
 
@@ -141,6 +160,19 @@ final class Command {
 			},
 			static fn ( string $key ): mixed => get_option( $key, null ),
 			static fn ( string $key, mixed $value, bool $autoload ): bool => update_option( $key, $value, $autoload ),
+			static function ( string $stylesheet, string $key, mixed $value ): void {
+				// set_theme_mod operates on the CURRENT theme. To set
+				// mods for an arbitrary stylesheet, write directly to
+				// the option_name `theme_mods_<stylesheet>`. WP reads
+				// theme mods from there, so this is the canonical write.
+				$key_name = 'theme_mods_' . $stylesheet;
+				$current  = get_option( $key_name );
+				if ( ! is_array( $current ) ) {
+					$current = array();
+				}
+				$current[ $key ] = $value;
+				update_option( $key_name, $current, true );
+			},
 		);
 
 		try {
@@ -170,6 +202,19 @@ final class Command {
 	}
 
 	/**
+	 * Default output dir: <site-root>/web/imports/<safe-slug>/.
+	 *
+	 * Image-baked snapshots are versioned alongside the rest of the
+	 * site code in git. The site Dockerfile COPYs `web/imports/` into
+	 * the runtime image; the chart's install Job iterates the dir and
+	 * runs `wp fp apply` per snapshot subdir.
+	 *
+	 * No timestamp suffix on the dir — same slug = same destination,
+	 * re-running `wp fp snapshot --slug=X` cleanly overwrites. That's
+	 * what designers want for iterating ("I changed the demo, re-snap
+	 * and re-commit"); the snapshot ID inside manifest.json carries
+	 * the timestamp for traceability.
+	 *
 	 * @param AssocArgs $assoc_args
 	 */
 	private function resolve_output_dir( array $assoc_args, string $slug ): string {
@@ -183,9 +228,12 @@ final class Command {
 		if ( null !== $root_trimmed && '' !== $root_trimmed ) {
 			$root = $root_trimmed;
 		}
-		$stamp = gmdate( 'Ymd-His' );
-		$safe  = strtolower( preg_replace( '/[^a-z0-9]+/i', '-', $slug ) ?? 'snapshot' );
-		return rtrim( $root, '/' ) . "/fp-snapshots/{$safe}-{$stamp}";
+		$safe = strtolower( preg_replace( '/[^a-z0-9]+/i', '-', $slug ) ?? 'snapshot' );
+		$safe = trim( $safe, '-' );
+		if ( '' === $safe ) {
+			$safe = 'snapshot';
+		}
+		return rtrim( $root, '/' ) . "/web/imports/{$safe}";
 	}
 
 	private function uploads_dir(): string {
@@ -226,66 +274,13 @@ final class Command {
 	}
 
 	/**
-	 * Phase-0 adapter list: just The7. Phase 4 reads adapters from a
-	 * registry populated by other components / plugins.
+	 * Registered premium-theme adapters. v0.8.0 hard-codes The7;
+	 * Phase 4 swaps this for a registry pattern so other components
+	 * (or even site repos themselves) can contribute adapters.
 	 *
-	 * @return array<int, The7>
+	 * @return array<int, AdapterInterface>
 	 */
 	private function adapters(): array {
 		return array( new The7() );
-	}
-
-	/**
-	 * Run `wp db export -` against the loaded site, writing raw SQL to
-	 * the given stream handle. Uses `--extended-insert=0` so the
-	 * sanitiser can operate line-by-line.
-	 *
-	 * @param resource $stream
-	 */
-	private function run_wp_db_export( $stream ): void {
-		// WP_CLI::runcommand can't pipe to an arbitrary fd, so we shell
-		// out via proc_open. wp-cli is at a stable path in the runtime.
-		$wp_bin = $this->wp_cli_binary();
-		$descs  = array(
-			0 => array( 'pipe', 'r' ),
-			1 => $stream,
-			2 => array( 'pipe', 'w' ),
-		);
-		$proc   = proc_open(
-			array(
-				$wp_bin,
-				'--allow-root',
-				'--path=' . ( defined( 'ABSPATH' ) ? rtrim( (string) constant( 'ABSPATH' ), '/' ) : '' ),
-				'db',
-				'export',
-				'-',
-				'--extended-insert=0',
-				'--add-drop-table',
-				'--skip-themes',
-				'--skip-plugins',
-			),
-			$descs,
-			$pipes
-		);
-		if ( ! is_resource( $proc ) ) {
-			throw new \RuntimeException( 'could not exec wp db export' );
-		}
-		fclose( $pipes[0] );
-		$stderr = stream_get_contents( $pipes[2] );
-		fclose( $pipes[2] );
-		$status = proc_close( $proc );
-		if ( 0 !== $status ) {
-			throw new \RuntimeException( 'wp db export exited ' . $status . ': ' . trim( (string) $stderr ) );
-		}
-	}
-
-	private function wp_cli_binary(): string {
-		foreach ( array( '/usr/local/bin/wp', '/usr/bin/wp', 'wp' ) as $cand ) {
-			$resolved = trim( (string) shell_exec( "command -v {$cand} 2>/dev/null" ) );
-			if ( '' !== $resolved ) {
-				return $resolved;
-			}
-		}
-		return 'wp';
 	}
 }
