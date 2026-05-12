@@ -1,6 +1,6 @@
 {
     "name": "frankenpress/mu-plugin",
-    "description": "FrankenPress must-use plugin — platform-essential WordPress glue: humanmade/s3-uploads bootstrap (with safety guards), Souin cache invalidator, Site Health adjustments for the immutable-image lockdown, SMTP mailer for wp_mail, and the `wp fp` snapshot/apply WP-CLI subcommands (WXR-based, adapter-scoped, additive apply). Snapshots are safe to run against live sites — they can only carry rows an adapter declared in scope; user-generated content (orders, comments, accounts) is never touched.",
+    "description": "FrankenPress must-use plugin — platform-essential WordPress glue: humanmade/s3-uploads bootstrap (with safety guards), Souin cache invalidator, Site Health adjustments for the immutable-image lockdown, SMTP mailer for wp_mail, and the `wp fp` snapshot/apply WP-CLI subcommands (WXR-based, FSE-adapter-scoped, additive apply). Snapshots are safe to run against live sites — they can only carry rows the active adapter declared in scope; user-generated content (orders, comments, accounts) is never touched.",
     "license": "Apache-2.0",
     "type": "wordpress-muplugin",
     "authors": [

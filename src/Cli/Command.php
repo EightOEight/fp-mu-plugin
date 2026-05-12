@@ -6,8 +6,8 @@
  *
  *   wp fp snapshot --slug=<id> [--note=<text>] [--output-dir=<path>]
  *     Capture local site state to a snapshot directory (manifest +
- *     sanitised DB dump + composer-patch + uploads-manifest). Run on
- *     the designer's docker-compose stack.
+ *     scoped WXR + options sidecar + uploads-manifest audit log). Run
+ *     on the designer's docker-compose stack.
  *
  *   wp fp apply --snapshot-dir=<path>
  *     Apply a snapshot directory to the current site. Imports the DB,
@@ -32,7 +32,7 @@ declare(strict_types=1);
 namespace FrankenPress\Cli;
 
 use FrankenPress\Cli\Adapters\AdapterInterface;
-use FrankenPress\Cli\Adapters\The7;
+use FrankenPress\Cli\Adapters\Fse;
 use FrankenPress\Cli\Apply\Restorer;
 use FrankenPress\Cli\Snapshot\Capturer;
 use Throwable;
@@ -61,7 +61,7 @@ final class Command {
 	 *
 	 * ## EXAMPLES
 	 *
-	 *     wp fp snapshot --slug=architect-2 --note="The7 FSE Architect demo + accent colour tweak"
+	 *     wp fp snapshot --slug=homepage-rev2 --note="Block-pattern refresh + accent colour tweak"
 	 *
 	 * @param array<int, string> $args        Positional args (unused).
 	 * @param AssocArgs          $assoc_args  Flag values.
@@ -90,10 +90,10 @@ final class Command {
 		};
 		$sql_runner = static function ( string $sql ): array {
 			global $wpdb;
-			// SQL is composed by the snapshot capturers from adapter-
-			// declared patterns (e.g. `the7_%`) — not from user input
-			// — so $wpdb->prepare() placeholders don't apply here. The
-			// capturers escape values defensively before composing.
+			// SQL is composed by WxrCapturer from adapter-declared
+			// post-type names — not from user input — so $wpdb->prepare()
+			// placeholders don't apply here. The capturer escapes values
+			// defensively before composing.
 			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 			$rows = $wpdb->get_results( $sql, ARRAY_A );
 			return is_array( $rows ) ? $rows : array();
@@ -104,16 +104,13 @@ final class Command {
 			$output_dir,
 			$slug,
 			$note,
-			defined( 'WP_PLUGIN_DIR' ) ? (string) constant( 'WP_PLUGIN_DIR' ) : '',
 			$this->uploads_dir(),
-			$this->composer_json_path(),
-			(array) get_option( 'active_plugins', array() ),
 			(string) home_url(),
 			$this->wp_version_safe(),
 			(string) get_option( 'stylesheet', '' ),
 			$this->adapters(),
 			new \FrankenPress\Cli\Snapshot\WxrCapturer( $wp_runner, $sql_runner ),
-			new \FrankenPress\Cli\Snapshot\OptionsCapturer( $sql_runner, $option_get ),
+			new \FrankenPress\Cli\Snapshot\OptionsCapturer( $option_get ),
 		);
 
 		try {
@@ -124,7 +121,7 @@ final class Command {
 		}
 
 		\WP_CLI::log( "snapshot written: {$manifest_path}" );
-		\WP_CLI::log( 'review the manifest + composer-patch.json, then commit web/imports/' . $slug . '/ and open a site-repo PR.' );
+		\WP_CLI::log( 'review the manifest + options.json, then commit web/imports/' . $slug . '/ and open a site-repo PR.' );
 		\WP_CLI::success( 'snapshot complete' );
 	}
 
@@ -134,14 +131,14 @@ final class Command {
 	 * ## OPTIONS
 	 *
 	 * --snapshot-dir=<path>
-	 * : Local directory containing manifest.json + db.sql.gz +
-	 *   composer-patch.json + uploads-manifest.txt. The chart's
-	 *   post-install Job downloads the snapshot bundle from S3 into a
-	 *   tmp dir before invoking this command.
+	 * : Local directory containing manifest.json + content.xml.gz +
+	 *   options.json + uploads-manifest.txt. The chart's install Job
+	 *   iterates `web/imports/<slug>/` directories baked into the site
+	 *   image and invokes this command per snapshot.
 	 *
 	 * ## EXAMPLES
 	 *
-	 *     wp fp apply --snapshot-dir=/tmp/fp-snapshot-architect-2-20260511-091422
+	 *     wp fp apply --snapshot-dir=/app/web/imports/homepage-rev2
 	 *
 	 * @param array<int, string> $args
 	 * @param AssocArgs          $assoc_args
@@ -285,38 +282,19 @@ final class Command {
 		return '';
 	}
 
-	private function composer_json_path(): string {
-		// Bedrock layout: <site-root>/composer.json. ABSPATH points at
-		// <site-root>/web/wp/ in Bedrock; the composer.json lives two
-		// levels up.
-		$candidates = array(
-			defined( 'ABSPATH' )
-				? dirname( rtrim( (string) constant( 'ABSPATH' ), '/' ), 2 ) . '/composer.json'
-				: '',
-			getcwd() . '/composer.json',
-			'/app/composer.json',
-		);
-		foreach ( $candidates as $path ) {
-			if ( '' !== $path && is_file( $path ) ) {
-				return $path;
-			}
-		}
-		return $candidates[0];
-	}
-
 	private function wp_version_safe(): string {
 		global $wp_version;
 		return isset( $wp_version ) ? (string) $wp_version : '';
 	}
 
 	/**
-	 * Registered premium-theme adapters. v0.8.0 hard-codes The7;
-	 * Phase 4 swaps this for a registry pattern so other components
-	 * (or even site repos themselves) can contribute adapters.
+	 * Registered snapshot adapters. v0.10.0 hard-codes Fse; a future
+	 * phase swaps this for a registry pattern so other components (or
+	 * even site repos themselves) can contribute adapters.
 	 *
 	 * @return array<int, AdapterInterface>
 	 */
 	private function adapters(): array {
-		return array( new The7() );
+		return array( new Fse() );
 	}
 }
