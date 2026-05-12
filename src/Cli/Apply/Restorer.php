@@ -55,6 +55,7 @@ final class Restorer {
 	 * @param callable                     $att_updater     fn(int $post_id, array $fields, array $meta): void.
 	 * @param callable                     $att_inserter    fn(array $fields, array $meta): int — wraps `wp_insert_post` for attachments.
 	 * @param string                       $uploads_basedir Absolute path to `wp_upload_dir()['basedir']`. May be an `s3://` stream wrapper when S3UploadsBootstrap is active.
+	 * @param string                       $uploads_baseurl Public URL prefix for uploads (`wp_upload_dir()['baseurl']`). On FrankenPress with S3UploadsBootstrap this is the S3 bucket URL (or the configured CDN). Used to rewrite captured `<source>/app/uploads` URLs in block markup so attachment renders point at S3 rather than the WP host (which doesn't proxy /app/uploads/ to S3).
 	 */
 	public function __construct(
 		private string $snapshot_dir,
@@ -71,6 +72,7 @@ final class Restorer {
 		private $att_updater,
 		private $att_inserter,
 		private string $uploads_basedir,
+		private string $uploads_baseurl,
 	) {}
 
 	/**
@@ -127,9 +129,28 @@ final class Restorer {
 		$this->apply_options( $id_remap );
 
 		// Stage 5: search-replace URLs in the imported content.
+		//
+		// Two passes:
+		//   5a. Upload URLs first: <source>/app/uploads → wp_upload_dir.baseurl
+		//       (which on FrankenPress + S3UploadsBootstrap is the S3 URL).
+		//       Captured block-attr `url` strings are literal — no
+		//       wp_get_attachment_url filter runs on them at render time —
+		//       so they need to be rewritten to point directly at S3.
+		//   5b. Remaining host: <source> → <target>. Catches non-upload
+		//       refs (page links, hrefs in widget content, etc.).
+		//
+		// Order matters: upload-URL pass must run first, before the host-
+		// only replace turns `<source>/app/uploads/...` into `<target>/app/uploads/...`
+		// (which the second pass wouldn't recognise as an uploads URL).
 		$source_url = (string) ( $manifest['source']['site_url'] ?? '' );
-		if ( '' !== $source_url && $source_url !== $this->target_url ) {
-			$this->retarget_urls( $source_url, $this->target_url );
+		if ( '' !== $source_url ) {
+			$captured_uploads = $source_url . '/app/uploads';
+			if ( '' !== $this->uploads_baseurl && $captured_uploads !== $this->uploads_baseurl ) {
+				$this->retarget_urls( $captured_uploads, $this->uploads_baseurl );
+			}
+			if ( $source_url !== $this->target_url ) {
+				$this->retarget_urls( $source_url, $this->target_url );
+			}
 		}
 
 		// Stage 6: adapter post_apply hook (single adapter).

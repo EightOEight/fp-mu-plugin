@@ -307,6 +307,13 @@ final class Command {
 			// wrapper path, so `copy()` into this directory transparently
 			// writes to S3.
 			(string) ( wp_get_upload_dir()['basedir'] ?? $this->uploads_dir() ),
+			// uploads_baseurl: the public URL prefix for uploads. On
+			// FrankenPress with S3UploadsBootstrap active this is the
+			// S3 bucket URL (or the configured CDN if FP_S3_BUCKET_URL
+			// is set). Used by the apply-time URL retarget to rewrite
+			// captured `<source>/app/uploads` strings in block markup
+			// so attachment renders point at S3 rather than the WP host.
+			(string) ( wp_get_upload_dir()['baseurl'] ?? '' ),
 		);
 
 		try {
