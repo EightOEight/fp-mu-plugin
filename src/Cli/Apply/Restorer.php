@@ -41,16 +41,20 @@ final class Restorer {
 	public const APPLIED_SHA256_OPTION = 'fp_snapshot_applied_sha256';
 
 	/**
-	 * @param string                       $snapshot_dir    Local directory with manifest.json + content.xml.gz + options.json + templates.json.
+	 * @param string                       $snapshot_dir    Local directory with manifest.json + content.xml.gz + options.json + templates.json + attachments.json.
 	 * @param string                       $target_url      home_url() at apply time.
 	 * @param array<int, AdapterInterface> $adapters        Registered adapters; the one whose name() matches manifest.adapter is fired.
 	 * @param callable                     $wp_runner       fn(string $cmd, array $assoc): mixed — wraps WP_CLI::runcommand.
 	 * @param callable                     $option_reader   fn(string $key): mixed.
 	 * @param callable                     $option_writer   fn(string $key, mixed $value, bool $autoload): bool.
 	 * @param callable                     $theme_mod_set   fn(string $stylesheet, string $key, mixed $value): void.
-	 * @param callable                     $owned_finder    fn(string $post_type, string $slug): ?int — returns post ID or null. Wraps `get_posts` for testability.
-	 * @param callable                     $owned_updater   fn(int $post_id, array $fields, array $meta): void — wraps `wp_update_post` + `update_post_meta`.
-	 * @param callable                     $owned_inserter  fn(string $post_type, string $slug, array $fields, array $meta): int — wraps `wp_insert_post` + `update_post_meta`. Returns the new post ID.
+	 * @param callable                     $owned_finder    fn(string $post_type, string $slug): ?int — returns post ID or null.
+	 * @param callable                     $owned_updater   fn(int $post_id, array $fields, array $meta): void.
+	 * @param callable                     $owned_inserter  fn(string $post_type, string $slug, array $fields, array $meta): int.
+	 * @param callable                     $att_finder      fn(string $relative_file): ?int — looks up attachment post ID by `_wp_attached_file` value.
+	 * @param callable                     $att_updater     fn(int $post_id, array $fields, array $meta): void.
+	 * @param callable                     $att_inserter    fn(array $fields, array $meta): int — wraps `wp_insert_post` for attachments.
+	 * @param string                       $uploads_basedir Absolute path to `wp_upload_dir()['basedir']`. May be an `s3://` stream wrapper when S3UploadsBootstrap is active.
 	 */
 	public function __construct(
 		private string $snapshot_dir,
@@ -63,6 +67,10 @@ final class Restorer {
 		private $owned_finder,
 		private $owned_updater,
 		private $owned_inserter,
+		private $att_finder,
+		private $att_updater,
+		private $att_inserter,
+		private string $uploads_basedir,
 	) {}
 
 	/**
@@ -92,28 +100,41 @@ final class Restorer {
 		$this->verify_blob( $wxr_path, $expected_sha );
 
 		// Stage 1: import the WXR (post_types_additive — INSERT-only).
+		// Post v0.12.0 the Fse adapter's additive scope is empty so
+		// this is a no-op for FSE sites; the stage stays for future
+		// adapters that need to ship editor-content.
 		$this->import_wxr( $wxr_path );
 
 		// Stage 2: upsert the owned posts (post_types_owned — UPSERT
 		// by post_name+post_type so designer iteration propagates).
 		$this->apply_owned_posts();
 
-		// Stage 3: apply the scoped options.
-		$this->apply_options();
+		// Stage 3: upsert attachments referenced by
+		// `option_keys_attachment_refs` + copy their binary files into
+		// `wp_upload_dir()` (S3UploadsBootstrap's stream wrapper takes
+		// it from there). Returns a map of captured-ID → local-ID for
+		// the option-remap step below.
+		$id_remap = $this->apply_attachments();
 
-		// Stage 4: search-replace URLs in the imported content.
+		// Stage 4: apply the scoped options, remapping attachment-ID
+		// values via $id_remap so site_logo/site_icon/custom_logo land
+		// pointing at the local attachment post ID rather than the
+		// designer's captured ID.
+		$this->apply_options( $id_remap );
+
+		// Stage 5: search-replace URLs in the imported content.
 		$source_url = (string) ( $manifest['source']['site_url'] ?? '' );
 		if ( '' !== $source_url && $source_url !== $this->target_url ) {
 			$this->retarget_urls( $source_url, $this->target_url );
 		}
 
-		// Stage 5: adapter post_apply hook (single adapter).
+		// Stage 6: adapter post_apply hook (single adapter).
 		$this->fire_adapter(
 			(string) ( $manifest['adapter'] ?? '' ),
 			(array) ( $manifest['adapter_state'] ?? array() )
 		);
 
-		// Stage 6: idempotency markers.
+		// Stage 7: idempotency markers.
 		( $this->option_writer )( self::APPLIED_REF_OPTION, $id, true );
 		( $this->option_writer )( self::APPLIED_SHA256_OPTION, $expected_sha, true );
 
@@ -446,10 +467,123 @@ final class Restorer {
 	}
 
 	/**
+	 * Apply the attachments.json sidecar — upsert each captured
+	 * attachment by `_wp_attached_file` (relative path under uploads,
+	 * stable across environments), copy its binary files into
+	 * `wp_upload_dir()` (S3UploadsBootstrap's stream wrapper handles
+	 * the S3 write), and return a captured-ID → local-ID remap that
+	 * the options stage uses to rewrite `site_logo` etc.
+	 *
+	 * Returns the remap so {@see apply_options()} can rewrite values
+	 * for `option_keys_attachment_refs` to point at the local
+	 * attachment post ID rather than the designer's captured ID.
+	 *
+	 * @return array<int, int> captured_id => local_id
+	 */
+	private function apply_attachments(): array {
+		$remap = array();
+
+		$path = $this->snapshot_dir . '/attachments.json';
+		if ( ! is_file( $path ) ) {
+			return $remap;
+		}
+		$raw = file_get_contents( $path );
+		if ( false === $raw || '' === $raw ) {
+			return $remap;
+		}
+		$payload = json_decode( $raw, true );
+		if ( ! is_array( $payload ) ) {
+			return $remap;
+		}
+
+		$by_file = is_array( $payload['by_file'] ?? null ) ? (array) $payload['by_file'] : array();
+		foreach ( $by_file as $rel_file => $entry ) {
+			if ( ! is_string( $rel_file ) || '' === $rel_file || ! is_array( $entry ) ) {
+				continue;
+			}
+			$fields = array(
+				'post_title'     => (string) ( $entry['post_title'] ?? '' ),
+				'post_excerpt'   => (string) ( $entry['post_excerpt'] ?? '' ),
+				'post_content'   => (string) ( $entry['post_content'] ?? '' ),
+				'post_status'    => (string) ( $entry['post_status'] ?? 'inherit' ),
+				'post_mime_type' => (string) ( $entry['post_mime_type'] ?? '' ),
+			);
+			$meta   = is_array( $entry['meta'] ?? null ) ? (array) $entry['meta'] : array();
+
+			$existing_id = ( $this->att_finder )( $rel_file );
+			if ( null !== $existing_id ) {
+				( $this->att_updater )( (int) $existing_id, $fields, $meta );
+				$local_id = (int) $existing_id;
+			} else {
+				$local_id = ( $this->att_inserter )( $fields, $meta );
+			}
+
+			$captured_id = (int) ( $entry['captured_id'] ?? 0 );
+			if ( $captured_id > 0 ) {
+				$remap[ $captured_id ] = $local_id;
+			}
+
+			$this->copy_binaries( (array) ( $entry['files'] ?? array() ) );
+		}
+
+		return $remap;
+	}
+
+	/**
+	 * Copy each file from `$snapshot_dir/uploads/<rel>` into
+	 * `$uploads_basedir/<rel>`. When S3UploadsBootstrap is active
+	 * the basedir is an `s3://` stream wrapper path, so this
+	 * transparently writes to S3.
+	 *
+	 * @param array<int, string> $rel_files
+	 */
+	private function copy_binaries( array $rel_files ): void {
+		foreach ( $rel_files as $rel ) {
+			$rel = (string) $rel;
+			if ( '' === $rel ) {
+				continue;
+			}
+			$src = $this->snapshot_dir . '/uploads/' . $rel;
+			if ( ! is_file( $src ) ) {
+				// Snapshot was captured without the binary on disk;
+				// skip silently. The attachment post still landed
+				// (so option_remap works) but the URL will 404 until
+				// the file is uploaded out-of-band.
+				continue;
+			}
+			$dest = $this->uploads_basedir . '/' . $rel;
+			// Ensure the dest directory exists. With the s3-uploads
+			// stream wrapper, mkdir is mostly a no-op (S3 has no
+			// directories) — set_error_handler keeps any warning out
+			// of the apply log without using `@`.
+			$dest_dir = dirname( $dest );
+			if ( ! is_dir( $dest_dir ) ) {
+				set_error_handler( static fn (): bool => true );
+				mkdir( $dest_dir, 0755, true );
+				restore_error_handler();
+			}
+			set_error_handler( static fn (): bool => true );
+			$ok = copy( $src, $dest );
+			restore_error_handler();
+			if ( ! $ok ) {
+				throw new RuntimeException( "apply: copy binary failed {$src} → {$dest}" );
+			}
+		}
+	}
+
+	/**
 	 * Apply the options.json sidecar — `update_option` for each entry,
 	 * `set_theme_mod` for each theme_mods entry.
+	 *
+	 * For options whose values are attachment IDs (per
+	 * `option_keys_attachment_refs` in the scope, rendered via the
+	 * apply_attachments stage's captured-ID → local-ID remap), the
+	 * captured ID is replaced with the local ID so the option points
+	 * at the right attachment post on this environment.
+	 *
+	 * @param array<int, int> $attachment_id_remap captured_id => local_id
 	 */
-	private function apply_options(): void {
+	private function apply_options( array $attachment_id_remap = array() ): void {
 		$path = $this->snapshot_dir . '/options.json';
 		if ( ! is_file( $path ) ) {
 			return;
@@ -463,9 +597,28 @@ final class Restorer {
 			return;
 		}
 
-		$options = (array) ( $payload['options'] ?? array() );
+		// Apply the captured-ID → local-ID remap to attachment-
+		// referenced option values. The manifest's scope.option_keys_attachment_refs
+		// is the canonical list, but here we just look up the captured
+		// option value: if it's an integer we have a mapping for, swap it.
+		$options            = (array) ( $payload['options'] ?? array() );
+		$remap_meta_path    = $this->snapshot_dir . '/attachments.json';
+		$option_ref_to_file = array();
+		if ( is_file( $remap_meta_path ) ) {
+			$att_raw            = (string) file_get_contents( $remap_meta_path );
+			$att                = json_decode( $att_raw, true );
+			$option_ref_to_file = is_array( $att['option_ref_to_file'] ?? null ) ? (array) $att['option_ref_to_file'] : array();
+		}
+
 		foreach ( $options as $key => $value ) {
-			( $this->option_writer )( (string) $key, $value, true );
+			$key = (string) $key;
+			if ( isset( $option_ref_to_file[ $key ] ) ) {
+				$captured = (int) $value;
+				if ( $captured > 0 && isset( $attachment_id_remap[ $captured ] ) ) {
+					$value = (string) $attachment_id_remap[ $captured ];
+				}
+			}
+			( $this->option_writer )( $key, $value, true );
 		}
 
 		$theme_mods = (array) ( $payload['theme_mods'] ?? array() );
