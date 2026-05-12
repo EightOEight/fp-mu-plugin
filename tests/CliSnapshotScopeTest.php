@@ -74,6 +74,18 @@ final class CliSnapshotScopeTest extends TestCase {
 		);
 	}
 
+	public function test_merged_with_dedups_attachment_ref_keys(): void {
+		$a = new SnapshotScope( option_keys_attachment_refs: array( 'site_logo', 'site_icon' ) );
+		$b = new SnapshotScope( option_keys_attachment_refs: array( 'site_icon', 'custom_logo' ) );
+
+		$merged = $a->merged_with( $b );
+
+		$this->assertSame(
+			array( 'site_logo', 'site_icon', 'custom_logo' ),
+			$merged->option_keys_attachment_refs
+		);
+	}
+
 	public function test_merged_with_dedups_theme_mods_for(): void {
 		$a = new SnapshotScope( theme_mods_for: array( 'twentytwentyfive' ) );
 		$b = new SnapshotScope( theme_mods_for: array( 'twentytwentyfive' ) );

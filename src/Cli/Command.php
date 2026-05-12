@@ -103,6 +103,8 @@ final class Command {
 		$active_stylesheet = (string) get_option( 'stylesheet', '' );
 		$meta_reader       = static fn ( int $post_id, string $key ): mixed => get_post_meta( $post_id, $key, true );
 
+		$post_loader = static fn ( int $id ): ?object => get_post( $id );
+
 		$capturer = new Capturer(
 			$output_dir,
 			$slug,
@@ -115,6 +117,7 @@ final class Command {
 			new \FrankenPress\Cli\Snapshot\WxrCapturer( $wp_runner, $sql_runner ),
 			new \FrankenPress\Cli\Snapshot\OwnedPostsCapturer( $sql_runner, $meta_reader, $active_stylesheet ),
 			new \FrankenPress\Cli\Snapshot\OptionsCapturer( $option_get ),
+			new \FrankenPress\Cli\Snapshot\AttachmentRefCapturer( $option_get, $post_loader, $meta_reader, $this->uploads_dir() ),
 		);
 
 		try {
@@ -250,6 +253,59 @@ final class Command {
 				}
 				return $id;
 			},
+			// att_finder: look up an existing attachment post by
+			// `_wp_attached_file` postmeta. That's the stable key
+			// across local → stg → prd (the source filename is
+			// identical, only the attachment post ID varies).
+			static function ( string $relative_file ): ?int {
+				$found = get_posts(
+					array(
+						'post_type'        => 'attachment',
+						'post_status'      => 'any',
+						'numberposts'      => 1,
+						'fields'           => 'ids',
+						'suppress_filters' => true,
+						'meta_query'       => array(
+							array(
+								'key'   => '_wp_attached_file',
+								'value' => $relative_file,
+							),
+						),
+					)
+				);
+				if ( ! is_array( $found ) || empty( $found ) ) {
+					return null;
+				}
+				return (int) $found[0];
+			},
+			// att_updater: wp_update_post + meta keys (attachment posts
+			// follow the same update pattern as owned posts).
+			static function ( int $post_id, array $fields, array $meta ): void {
+				wp_update_post( array( 'ID' => $post_id ) + $fields );
+				foreach ( $meta as $k => $v ) {
+					update_post_meta( $post_id, (string) $k, $v );
+				}
+			},
+			// att_inserter: wp_insert_post with post_type=attachment,
+			// then write the meta keys. Returns the new local post ID
+			// so the apply path can remap option values.
+			static function ( array $fields, array $meta ): int {
+				$id = wp_insert_post(
+					array( 'post_type' => 'attachment' ) + $fields
+				);
+				if ( is_wp_error( $id ) || ! is_int( $id ) || $id <= 0 ) {
+					throw new \RuntimeException( 'apply: wp_insert_post for attachment failed' );
+				}
+				foreach ( $meta as $k => $v ) {
+					update_post_meta( $id, (string) $k, $v );
+				}
+				return $id;
+			},
+			// uploads_basedir: the canonical wp_upload_dir basedir.
+			// When S3UploadsBootstrap is active this is an `s3://` stream
+			// wrapper path, so `copy()` into this directory transparently
+			// writes to S3.
+			(string) ( wp_get_upload_dir()['basedir'] ?? $this->uploads_dir() ),
 		);
 
 		try {

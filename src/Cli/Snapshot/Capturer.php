@@ -6,12 +6,16 @@
  *
  *   manifest.yaml         — fp.snapshot/v4 manifest (canonical form)
  *   manifest.json         — JSON sidecar for the apply path
- *   content.xml.gz        — WXR for `post_types_additive` only
- *                           (page, post, attachment — INSERT-only on apply)
+ *   content.xml.gz        — WXR for `post_types_additive` (typically empty
+ *                           post v0.12.0 — page/post/attachment are out of
+ *                           the Fse adapter's scope)
  *   templates.json        — Owned-CPT sidecar with upsert semantics
  *                           (wp_template, wp_template_part,
  *                            wp_global_styles, wp_navigation)
  *   options.json          — scoped wp_options + theme_mods JSON sidecar
+ *   attachments.json      — designer-asset attachments referenced by
+ *                           `option_keys_attachment_refs` (logos, favicons)
+ *   uploads/<rel-path>... — binary files for the captured attachments
  *   uploads-manifest.txt  — sha256 + size per file under uploads/
  *                           (audit log; not load-bearing for apply)
  *
@@ -22,17 +26,11 @@
  *   3. WxrCapturer runs `wp export` against post_types_additive
  *   4. OwnedPostsCapturer dumps post_types_owned rows to templates.json
  *   5. OptionsCapturer dumps scoped options + theme_mods to JSON
- *   6. Walk uploads/ → uploads-manifest.txt
- *   7. The fired adapter contributes a capture_state() blob
- *   8. Emit manifest.yaml + manifest.json
- *
- * v4 changes vs v3:
- *
- *   - Scope split into `post_types_additive` + `post_types_owned`.
- *   - WXR now ships only additive content (smaller WXR).
- *   - New `templates.json` sidecar for owned-CPT upsert. See
- *     `iteration-ux.md` in the workspace .aidocs/ for the empirical
- *     motivation (v3's silent-skip on second-apply of FSE CPTs).
+ *   6. AttachmentRefCapturer captures attachments referenced by
+ *      `option_keys_attachment_refs` + bundles their binaries
+ *   7. Walk uploads/ → uploads-manifest.txt
+ *   8. The fired adapter contributes a capture_state() blob
+ *   9. Emit manifest.yaml + manifest.json
  *
  * @package FrankenPress\Cli\Snapshot
  */
@@ -47,17 +45,7 @@ use RuntimeException;
 final class Capturer {
 
 	/**
-	 * @param string                            $output_dir    Absolute path where the snapshot directory is written.
-	 * @param string                            $slug          Designer-chosen short id.
-	 * @param string                            $note          Optional designer note.
-	 * @param string                            $uploads_dir   WP_CONTENT_DIR/uploads.
-	 * @param string                            $site_url      home_url() at capture time.
-	 * @param string                            $wp_version    WordPress version string.
-	 * @param string                            $active_theme  Stylesheet slug.
-	 * @param array<int, AdapterInterface>      $adapters      Registered adapters; only one may detect() positively.
-	 * @param WxrCapturer                       $wxr           WXR capturer (additive posts).
-	 * @param OwnedPostsCapturer                $owned         Owned-post capturer (FSE CPTs → templates.json).
-	 * @param OptionsCapturer                   $opts          Options capturer.
+	 * @param array<int, AdapterInterface> $adapters  Registered adapters; only one may detect() positively.
 	 */
 	public function __construct(
 		private string $output_dir,
@@ -71,6 +59,7 @@ final class Capturer {
 		private WxrCapturer $wxr,
 		private OwnedPostsCapturer $owned,
 		private OptionsCapturer $opts,
+		private AttachmentRefCapturer $attachments,
 	) {}
 
 	/**
@@ -124,6 +113,12 @@ final class Capturer {
 		file_put_contents( $this->output_dir . '/options.json', $options_json );
 		$options_sha256 = hash( 'sha256', $options_json );
 
+		$attachments_payload = $this->attachments->capture( $scope );
+		$attachments_json    = json_encode( $attachments_payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) . "\n";
+		file_put_contents( $this->output_dir . '/attachments.json', $attachments_json );
+		$attachments_sha256 = hash( 'sha256', $attachments_json );
+		$binaries_summary   = $this->attachments->capture_binaries( $attachments_payload['by_file'], $this->output_dir );
+
 		$uploads_manifest = $this->build_uploads_manifest();
 		file_put_contents( $this->output_dir . '/uploads-manifest.txt', $uploads_manifest['text'] );
 
@@ -137,6 +132,9 @@ final class Capturer {
 			$owned_count,
 			$options_sha256,
 			count( $options_payload['options'] ),
+			$attachments_sha256,
+			count( $attachments_payload['by_file'] ),
+			$binaries_summary,
 			$uploads_manifest,
 			$adapter_state
 		);
@@ -157,9 +155,18 @@ final class Capturer {
 			}
 			return;
 		}
-		$entries = glob( $this->output_dir . '/*' );
+		// Clear all entries (files + subdirs — the previous capture may
+		// have written `uploads/` with binaries we need to flush).
+		$this->rm_rf_contents( $this->output_dir );
+	}
+
+	private function rm_rf_contents( string $dir ): void {
+		$entries = glob( $dir . '/*' );
 		foreach ( ( false === $entries ? array() : $entries ) as $entry ) {
-			if ( is_file( $entry ) ) {
+			if ( is_dir( $entry ) && ! is_link( $entry ) ) {
+				$this->rm_rf_contents( $entry );
+				rmdir( $entry );
+			} else {
 				unlink( $entry );
 			}
 		}
@@ -222,6 +229,7 @@ final class Capturer {
 
 	/**
 	 * @param array{post_count: int, sha256: string}                 $wxr_summary
+	 * @param array{file_count: int, total_bytes: int}               $binaries_summary
 	 * @param array{text: string, file_count: int, total_bytes: int} $uploads_manifest
 	 * @param array<string, mixed>                                   $adapter_state
 	 */
@@ -233,6 +241,9 @@ final class Capturer {
 		int $owned_count,
 		string $options_sha256,
 		int $options_count,
+		string $attachments_sha256,
+		int $attachments_count,
+		array $binaries_summary,
 		array $uploads_manifest,
 		array $adapter_state
 	): Manifest {
@@ -251,24 +262,30 @@ final class Capturer {
 			),
 			'adapter'  => $adapter_name,
 			'scope'    => array(
-				'post_types_additive' => $scope->post_types_additive,
-				'post_types_owned'    => $scope->post_types_owned,
-				'option_keys'         => $scope->option_keys,
-				'theme_mods_for'      => $scope->theme_mods_for,
+				'post_types_additive'         => $scope->post_types_additive,
+				'post_types_owned'            => $scope->post_types_owned,
+				'option_keys'                 => $scope->option_keys,
+				'option_keys_attachment_refs' => $scope->option_keys_attachment_refs,
+				'theme_mods_for'              => $scope->theme_mods_for,
 			),
 			'contents' => array(
-				'wxr'                 => 'content.xml.gz',
-				'wxr_sha256'          => $wxr_summary['sha256'],
-				'wxr_post_count'      => $wxr_summary['post_count'],
-				'templates'           => 'templates.json',
-				'templates_sha256'    => $owned_sha256,
-				'templates_count'     => $owned_count,
-				'options'             => 'options.json',
-				'options_sha256'      => $options_sha256,
-				'options_count'       => $options_count,
-				'uploads_manifest'    => 'uploads-manifest.txt',
-				'uploads_file_count'  => $uploads_manifest['file_count'],
-				'uploads_total_bytes' => $uploads_manifest['total_bytes'],
+				'wxr'                  => 'content.xml.gz',
+				'wxr_sha256'           => $wxr_summary['sha256'],
+				'wxr_post_count'       => $wxr_summary['post_count'],
+				'templates'            => 'templates.json',
+				'templates_sha256'     => $owned_sha256,
+				'templates_count'      => $owned_count,
+				'options'              => 'options.json',
+				'options_sha256'       => $options_sha256,
+				'options_count'        => $options_count,
+				'attachments'          => 'attachments.json',
+				'attachments_sha256'   => $attachments_sha256,
+				'attachments_count'    => $attachments_count,
+				'binaries_file_count'  => $binaries_summary['file_count'],
+				'binaries_total_bytes' => $binaries_summary['total_bytes'],
+				'uploads_manifest'     => 'uploads-manifest.txt',
+				'uploads_file_count'   => $uploads_manifest['file_count'],
+				'uploads_total_bytes'  => $uploads_manifest['total_bytes'],
 			),
 		);
 

@@ -62,14 +62,13 @@ final class Fse implements AdapterInterface {
 
 	public function scope(): SnapshotScope {
 		return new SnapshotScope(
-			post_types_additive: array(
-				// User-editable content. WXR-shipped, INSERT-only on
-				// apply — existing rows by GUID are preserved.
-				'page',
-				'post',
-				'attachment',
-			),
-			post_types_owned:    array(
+			// page/post/attachment intentionally OMITTED. They're content,
+			// not design — see workspace memory
+			// `feedback_snapshot_design_not_content.md`. Designers don't
+			// ship live editorial content; designer-owned imagery rides
+			// via `option_keys_attachment_refs` below.
+			post_types_additive:         array(),
+			post_types_owned:             array(
 				// Design state the adapter owns end-to-end. Captured to
 				// templates.json; apply UPSERTs by post_name+post_type
 				// so designer iteration propagates. See iteration-ux.md
@@ -79,7 +78,7 @@ final class Fse implements AdapterInterface {
 				'wp_global_styles',
 				'wp_navigation',
 			),
-			option_keys:         array(
+			option_keys:                  array(
 				'blogname',
 				'blogdescription',
 				'show_on_front',
@@ -90,7 +89,17 @@ final class Fse implements AdapterInterface {
 				'site_logo',
 				'custom_logo',
 			),
-			theme_mods_for:      $this->active_stylesheet_or_empty(),
+			// Subset of option_keys whose values are attachment IDs. The
+			// capturer ships those attachments' post rows + binary files;
+			// the apply path remaps the IDs after upserting attachments
+			// (a captured "site_logo: 42" lands locally as the matching
+			// _wp_attached_file's post ID, which is rarely 42 on stg/prd).
+			option_keys_attachment_refs:  array(
+				'site_icon',
+				'site_logo',
+				'custom_logo',
+			),
+			theme_mods_for:               $this->active_stylesheet_or_empty(),
 		);
 	}
 

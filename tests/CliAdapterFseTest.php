@@ -51,15 +51,38 @@ final class CliAdapterFseTest extends TestCase {
 		$this->assertContains( 'wp_navigation', $scope->post_types_owned );
 	}
 
-	public function test_scope_additive_post_types_cover_user_content(): void {
-		// User-editable content goes via WXR with INSERT-only semantics
-		// (page/post/attachment). Existing rows on the target are
-		// preserved.
+	public function test_scope_additive_post_types_is_empty(): void {
+		// Post v0.12.0: page/post/attachment are content (editor-owned)
+		// and OUT of the designer snapshot scope entirely. See
+		// `feedback_snapshot_design_not_content.md`. The
+		// post_types_additive field stays in the schema for future
+		// adapters that might need editor-content sync, but Fse is
+		// design-only.
 		Functions\when( 'get_stylesheet' )->justReturn( 'twentytwentyfive' );
 		$scope = ( new Fse() )->scope();
-		$this->assertContains( 'page', $scope->post_types_additive );
-		$this->assertContains( 'post', $scope->post_types_additive );
-		$this->assertContains( 'attachment', $scope->post_types_additive );
+		$this->assertSame( array(), $scope->post_types_additive );
+	}
+
+	public function test_scope_declares_logo_options_as_attachment_refs(): void {
+		// Designer-asset imagery (logos, favicons) rides via the
+		// `option_keys_attachment_refs` field. AttachmentRefCapturer
+		// captures the referenced posts + binary files.
+		Functions\when( 'get_stylesheet' )->justReturn( 'twentytwentyfive' );
+		$scope = ( new Fse() )->scope();
+		$this->assertContains( 'site_logo', $scope->option_keys_attachment_refs );
+		$this->assertContains( 'site_icon', $scope->option_keys_attachment_refs );
+		$this->assertContains( 'custom_logo', $scope->option_keys_attachment_refs );
+	}
+
+	public function test_attachment_ref_options_are_also_in_option_keys(): void {
+		// option_keys_attachment_refs is a subset of option_keys —
+		// the values ride through options.json normally; the refs
+		// list just flags which ones need ID remapping.
+		Functions\when( 'get_stylesheet' )->justReturn( 'twentytwentyfive' );
+		$scope = ( new Fse() )->scope();
+		foreach ( $scope->option_keys_attachment_refs as $key ) {
+			$this->assertContains( $key, $scope->option_keys );
+		}
 	}
 
 	public function test_scope_split_has_no_overlap(): void {
