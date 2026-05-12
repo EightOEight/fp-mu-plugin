@@ -72,26 +72,35 @@ final class AttachmentRefCapturer {
 	 * @param callable $option_get      fn(string $key): mixed — wraps get_option.
 	 * @param callable $post_loader     fn(int $id): ?object — wraps get_post; returns post row or null.
 	 * @param callable $meta_reader     fn(int $post_id, string $key): mixed — wraps get_post_meta.
+	 * @param callable $blocks_parser   fn(string $content): array — wraps parse_blocks(); returns the WP blocks tree. Tests inject a fake.
 	 * @param string   $uploads_basedir Absolute filesystem path to WP_CONTENT_DIR/uploads (the source for binaries).
 	 */
 	public function __construct(
 		private $option_get,
 		private $post_loader,
 		private $meta_reader,
+		private $blocks_parser,
 		private string $uploads_basedir,
 	) {}
 
 	/**
-	 * Discover + capture attachments referenced by the scope's
-	 * `option_keys_attachment_refs`. Returns the structured payload
-	 * to be written as `attachments.json`.
+	 * Discover + capture attachments referenced by:
+	 *   1. The scope's `option_keys_attachment_refs` option values
+	 *      (e.g. `site_logo` → attachment ID).
+	 *   2. Inline block-attribute references inside the captured
+	 *      owned-posts' `post_content` (e.g. `<!-- wp:image
+	 *      {"id":42} -->` inside a `wp_template_part`).
 	 *
+	 * Returns the structured payload to be written as `attachments.json`.
+	 *
+	 * @param array<string, array<string, array<string, mixed>>> $owned_payload  The output of OwnedPostsCapturer::capture(). Used for the block-content scan pass.
 	 * @return array{by_file: array<string, array<string, mixed>>, option_ref_to_file: array<string, string>}
 	 */
-	public function capture( SnapshotScope $scope ): array {
+	public function capture( SnapshotScope $scope, array $owned_payload = array() ): array {
 		$by_file            = array();
 		$option_ref_to_file = array();
 
+		// Pass 1: option-value references (site_logo, site_icon, custom_logo).
 		foreach ( $scope->option_keys_attachment_refs as $option_key ) {
 			$raw = ( $this->option_get )( $option_key );
 			if ( null === $raw || '' === $raw || false === $raw ) {
@@ -101,38 +110,35 @@ final class AttachmentRefCapturer {
 			if ( $id <= 0 ) {
 				continue;
 			}
+			$attached_file = $this->maybe_capture_attachment( $id, $by_file );
+			if ( null !== $attached_file ) {
+				$option_ref_to_file[ $option_key ] = $attached_file;
+			}
+		}
 
-			$post = ( $this->post_loader )( $id );
-			if ( ! is_object( $post ) ) {
+		// Pass 2: inline block-attribute references inside owned-posts'
+		// post_content. Walks every captured wp_template / wp_template_part /
+		// wp_global_styles / wp_navigation entry, parses its block tree,
+		// extracts every numeric `id` / `mediaId` / etc. attr, and captures
+		// any that resolve to attachment posts. False positives are filtered
+		// by the post_type check.
+		foreach ( $owned_payload as $by_slug ) {
+			if ( ! is_array( $by_slug ) ) {
 				continue;
 			}
-			if ( ! isset( $post->post_type ) || 'attachment' !== $post->post_type ) {
-				continue;
+			foreach ( $by_slug as $entry ) {
+				if ( ! is_array( $entry ) ) {
+					continue;
+				}
+				$content = (string) ( $entry['post_content'] ?? '' );
+				if ( '' === $content ) {
+					continue;
+				}
+				$ids = $this->extract_block_attachment_ids( $content );
+				foreach ( $ids as $id ) {
+					$this->maybe_capture_attachment( $id, $by_file );
+				}
 			}
-
-			$attached_file = (string) ( $this->meta_reader )( $id, '_wp_attached_file' );
-			if ( '' === $attached_file ) {
-				continue;
-			}
-
-			if ( ! isset( $by_file[ $attached_file ] ) ) {
-				$metadata                  = ( $this->meta_reader )( $id, '_wp_attachment_metadata' );
-				$by_file[ $attached_file ] = array(
-					'captured_id'    => $id,
-					'post_title'     => (string) ( $post->post_title ?? '' ),
-					'post_excerpt'   => (string) ( $post->post_excerpt ?? '' ),
-					'post_content'   => (string) ( $post->post_content ?? '' ),
-					'post_status'    => (string) ( $post->post_status ?? 'inherit' ),
-					'post_mime_type' => (string) ( $post->post_mime_type ?? '' ),
-					'meta'           => array(
-						'_wp_attached_file'       => $attached_file,
-						'_wp_attachment_metadata' => $metadata,
-					),
-					'files'          => $this->resolve_file_set( $attached_file, $metadata ),
-				);
-			}
-
-			$option_ref_to_file[ $option_key ] = $attached_file;
 		}
 
 		ksort( $by_file );
@@ -142,6 +148,119 @@ final class AttachmentRefCapturer {
 			'by_file'            => $by_file,
 			'option_ref_to_file' => $option_ref_to_file,
 		);
+	}
+
+	/**
+	 * Capture a single attachment post + meta into the by_file map.
+	 * Returns the relative file path on success (so option-pass callers
+	 * can populate option_ref_to_file), or null when the post isn't an
+	 * attachment / has no `_wp_attached_file` / is already captured.
+	 *
+	 * @param array<string, array<string, mixed>> &$by_file
+	 */
+	private function maybe_capture_attachment( int $id, array &$by_file ): ?string {
+		$post = ( $this->post_loader )( $id );
+		if ( ! is_object( $post ) ) {
+			return null;
+		}
+		if ( ! isset( $post->post_type ) || 'attachment' !== $post->post_type ) {
+			return null;
+		}
+
+		$attached_file = (string) ( $this->meta_reader )( $id, '_wp_attached_file' );
+		if ( '' === $attached_file ) {
+			return null;
+		}
+
+		if ( isset( $by_file[ $attached_file ] ) ) {
+			return $attached_file;
+		}
+
+		$metadata                  = ( $this->meta_reader )( $id, '_wp_attachment_metadata' );
+		$by_file[ $attached_file ] = array(
+			'captured_id'    => $id,
+			'post_title'     => (string) ( $post->post_title ?? '' ),
+			'post_excerpt'   => (string) ( $post->post_excerpt ?? '' ),
+			'post_content'   => (string) ( $post->post_content ?? '' ),
+			'post_status'    => (string) ( $post->post_status ?? 'inherit' ),
+			'post_mime_type' => (string) ( $post->post_mime_type ?? '' ),
+			'meta'           => array(
+				'_wp_attached_file'       => $attached_file,
+				'_wp_attachment_metadata' => $metadata,
+			),
+			'files'          => $this->resolve_file_set( $attached_file, $metadata ),
+		);
+		return $attached_file;
+	}
+
+	/**
+	 * Walk a block tree extracted from `post_content` and return every
+	 * integer attr value that could be an attachment ID. The caller
+	 * filters by `get_post()->post_type === 'attachment'` so over-
+	 * collection here is harmless.
+	 *
+	 * Block IDs we expect to find:
+	 *   wp:image          → attrs.id
+	 *   wp:cover          → attrs.id (background image)
+	 *   wp:media-text     → attrs.mediaId
+	 *   wp:gallery        → attrs.ids[] (legacy) or innerBlocks of wp:image
+	 *   wp:video / audio  → attrs.id
+	 *   site-logo block   → no attr (uses option) — already handled by pass 1
+	 *
+	 * Pragmatic implementation: walk every attrs leaf, collect any
+	 * positive integer or numeric-string. Caller validates each.
+	 *
+	 * @return array<int, int>
+	 */
+	private function extract_block_attachment_ids( string $content ): array {
+		$blocks = ( $this->blocks_parser )( $content );
+		if ( ! is_array( $blocks ) ) {
+			return array();
+		}
+		$out = array();
+		$this->walk_blocks_for_ids( $blocks, $out );
+		return array_values( array_unique( $out ) );
+	}
+
+	/**
+	 * @param array<int, array<string, mixed>> $blocks
+	 * @param array<int, int>                  &$out
+	 */
+	private function walk_blocks_for_ids( array $blocks, array &$out ): void {
+		foreach ( $blocks as $block ) {
+			if ( ! is_array( $block ) ) {
+				continue;
+			}
+			if ( isset( $block['attrs'] ) && is_array( $block['attrs'] ) ) {
+				$this->collect_int_values( $block['attrs'], $out );
+			}
+			if ( isset( $block['innerBlocks'] ) && is_array( $block['innerBlocks'] ) ) {
+				$this->walk_blocks_for_ids( $block['innerBlocks'], $out );
+			}
+		}
+	}
+
+	/**
+	 * Recursively collect every value in $tree that's a positive
+	 * integer or all-digit string into $out.
+	 *
+	 * @param array<int|string, mixed> $tree
+	 * @param array<int, int>          &$out
+	 */
+	private function collect_int_values( array $tree, array &$out ): void {
+		foreach ( $tree as $value ) {
+			if ( is_int( $value ) && $value > 0 ) {
+				$out[] = $value;
+				continue;
+			}
+			if ( is_string( $value ) && '' !== $value && ctype_digit( $value ) && (int) $value > 0 ) {
+				$out[] = (int) $value;
+				continue;
+			}
+			if ( is_array( $value ) ) {
+				$this->collect_int_values( $value, $out );
+			}
+		}
 	}
 
 	/**
