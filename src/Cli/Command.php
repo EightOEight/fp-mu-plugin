@@ -100,6 +100,9 @@ final class Command {
 		};
 		$option_get = static fn ( string $key ): mixed => get_option( $key );
 
+		$active_stylesheet = (string) get_option( 'stylesheet', '' );
+		$meta_reader       = static fn ( int $post_id, string $key ): mixed => get_post_meta( $post_id, $key, true );
+
 		$capturer = new Capturer(
 			$output_dir,
 			$slug,
@@ -107,9 +110,10 @@ final class Command {
 			$this->uploads_dir(),
 			(string) home_url(),
 			$this->wp_version_safe(),
-			(string) get_option( 'stylesheet', '' ),
+			$active_stylesheet,
 			$this->adapters(),
 			new \FrankenPress\Cli\Snapshot\WxrCapturer( $wp_runner, $sql_runner ),
+			new \FrankenPress\Cli\Snapshot\OwnedPostsCapturer( $sql_runner, $meta_reader, $active_stylesheet ),
 			new \FrankenPress\Cli\Snapshot\OptionsCapturer( $option_get ),
 		);
 
@@ -198,6 +202,53 @@ final class Command {
 				}
 				$current[ $key ] = $value;
 				update_option( $key_name, $current, true );
+			},
+			// owned_finder: look up existing post by slug+post_type.
+			// Returns ID or null. Use suppress_filters so any installed
+			// query filters don't hide rows we own.
+			static function ( string $post_type, string $slug ): ?int {
+				$found = get_posts(
+					array(
+						'post_type'        => $post_type,
+						'name'             => $slug,
+						'post_status'      => 'any',
+						'numberposts'      => 1,
+						'fields'           => 'ids',
+						'suppress_filters' => true,
+					)
+				);
+				if ( ! is_array( $found ) || empty( $found ) ) {
+					return null;
+				}
+				return (int) $found[0];
+			},
+			// owned_updater: wp_update_post the snapshot's fields, then
+			// write each meta key.
+			static function ( int $post_id, array $fields, array $meta ): void {
+				wp_update_post( array( 'ID' => $post_id ) + $fields );
+				foreach ( $meta as $k => $v ) {
+					update_post_meta( $post_id, (string) $k, $v );
+				}
+			},
+			// owned_inserter: wp_insert_post with the snapshot's fields
+			// + slug + post_type, then write each meta key. Returns the
+			// new post ID for caller bookkeeping.
+			static function ( string $post_type, string $slug, array $fields, array $meta ): int {
+				$id = wp_insert_post(
+					array(
+						'post_type' => $post_type,
+						'post_name' => $slug,
+					) + $fields
+				);
+				if ( is_wp_error( $id ) || ! is_int( $id ) || $id <= 0 ) {
+					throw new \RuntimeException(
+						sprintf( 'apply: wp_insert_post for %s/%s failed', $post_type, $slug )
+					);
+				}
+				foreach ( $meta as $k => $v ) {
+					update_post_meta( $id, (string) $k, $v );
+				}
+				return $id;
 			},
 		);
 

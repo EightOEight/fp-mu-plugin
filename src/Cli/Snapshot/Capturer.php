@@ -1,14 +1,16 @@
 <?php
 /**
- * Snapshot capturer — orchestrates `wp fp snapshot` in fp.snapshot/v3.
+ * Snapshot capturer — orchestrates `wp fp snapshot` in fp.snapshot/v4.
  *
  * Produces a snapshot directory containing:
  *
- *   manifest.yaml         — fp.snapshot/v3 manifest (canonical form)
+ *   manifest.yaml         — fp.snapshot/v4 manifest (canonical form)
  *   manifest.json         — JSON sidecar for the apply path
- *   content.xml.gz        — WXR content (posts, postmeta, terms, menus,
- *                           attachments) for every CPT in the adapter's
- *                           scope
+ *   content.xml.gz        — WXR for `post_types_additive` only
+ *                           (page, post, attachment — INSERT-only on apply)
+ *   templates.json        — Owned-CPT sidecar with upsert semantics
+ *                           (wp_template, wp_template_part,
+ *                            wp_global_styles, wp_navigation)
  *   options.json          — scoped wp_options + theme_mods JSON sidecar
  *   uploads-manifest.txt  — sha256 + size per file under uploads/
  *                           (audit log; not load-bearing for apply)
@@ -16,27 +18,21 @@
  * Capture flow:
  *
  *   1. For each registered adapter, run detect()
- *   2. Exactly one adapter must fire — error otherwise (no empty
- *      snapshots, no silent multi-adapter composition)
- *   3. WxrCapturer runs `wp export` against the scope's post types
- *   4. OptionsCapturer dumps scoped options + theme_mods to JSON
- *   5. Walk uploads/ → uploads-manifest.txt
- *   6. The fired adapter contributes a capture_state() blob
- *   7. Emit manifest.yaml + manifest.json
+ *   2. Exactly one adapter must fire — error otherwise
+ *   3. WxrCapturer runs `wp export` against post_types_additive
+ *   4. OwnedPostsCapturer dumps post_types_owned rows to templates.json
+ *   5. OptionsCapturer dumps scoped options + theme_mods to JSON
+ *   6. Walk uploads/ → uploads-manifest.txt
+ *   7. The fired adapter contributes a capture_state() blob
+ *   8. Emit manifest.yaml + manifest.json
  *
- * No `wp db export`. No SQL dump. No Sanitiser. The snapshot can only
- * carry rows the adapter declared in scope. By construction, a
- * WooCommerce store's `wc_orders` table is never touched.
+ * v4 changes vs v3:
  *
- * v3 changes vs v2:
- *
- *   - Single `adapter:` string in manifest (was `adapters_fired:` list).
- *   - `scope:` block simplified to `post_types` + `option_keys` +
- *     `theme_mods_for` (dropped `post_types_with_marker`,
- *     `post_types_full_capture`, `option_patterns`,
- *     `documented_exclusions`).
- *   - `composer-patch.json` companion file removed entirely (was for
- *     tracking premium-theme bundled plugins; FSE doesn't need it).
+ *   - Scope split into `post_types_additive` + `post_types_owned`.
+ *   - WXR now ships only additive content (smaller WXR).
+ *   - New `templates.json` sidecar for owned-CPT upsert. See
+ *     `iteration-ux.md` in the workspace .aidocs/ for the empirical
+ *     motivation (v3's silent-skip on second-apply of FSE CPTs).
  *
  * @package FrankenPress\Cli\Snapshot
  */
@@ -59,8 +55,9 @@ final class Capturer {
 	 * @param string                            $wp_version    WordPress version string.
 	 * @param string                            $active_theme  Stylesheet slug.
 	 * @param array<int, AdapterInterface>      $adapters      Registered adapters; only one may detect() positively.
-	 * @param WxrCapturer                       $wxr           WXR capturer (injected so tests can swap the wp-cli + sql runners).
-	 * @param OptionsCapturer                   $opts          Options capturer (injected for the same reason).
+	 * @param WxrCapturer                       $wxr           WXR capturer (additive posts).
+	 * @param OwnedPostsCapturer                $owned         Owned-post capturer (FSE CPTs → templates.json).
+	 * @param OptionsCapturer                   $opts          Options capturer.
 	 */
 	public function __construct(
 		private string $output_dir,
@@ -72,6 +69,7 @@ final class Capturer {
 		private string $active_theme,
 		private array $adapters,
 		private WxrCapturer $wxr,
+		private OwnedPostsCapturer $owned,
 		private OptionsCapturer $opts,
 	) {}
 
@@ -80,7 +78,7 @@ final class Capturer {
 	 *
 	 * @throws RuntimeException when no adapter fired, or when more than
 	 *                          one adapter fires (composition is not
-	 *                          supported in v3).
+	 *                          supported).
 	 */
 	public function capture(): string {
 		$this->prepare_output_dir();
@@ -101,7 +99,7 @@ final class Capturer {
 		if ( count( $fired ) > 1 ) {
 			$names = implode( ', ', array_map( static fn ( AdapterInterface $a ): string => $a->name(), $fired ) );
 			throw new RuntimeException(
-				"multiple adapters detected ({$names}); v3 supports a single adapter per snapshot. " .
+				"multiple adapters detected ({$names}); only a single adapter per snapshot is supported. " .
 				'Adjust adapter detect() so exactly one fires.'
 			);
 		}
@@ -114,6 +112,12 @@ final class Capturer {
 
 		$wxr_path    = $this->output_dir . '/content.xml.gz';
 		$wxr_summary = $this->wxr->capture( $scope, $wxr_path );
+
+		$owned_payload = $this->owned->capture( $scope );
+		$owned_json    = json_encode( $owned_payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) . "\n";
+		file_put_contents( $this->output_dir . '/templates.json', $owned_json );
+		$owned_sha256 = hash( 'sha256', $owned_json );
+		$owned_count  = $this->count_owned_entries( $owned_payload );
 
 		$options_payload = $this->opts->capture( $scope );
 		$options_json    = json_encode( $options_payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) . "\n";
@@ -129,6 +133,8 @@ final class Capturer {
 			$adapter->name(),
 			$scope,
 			$wxr_summary,
+			$owned_sha256,
+			$owned_count,
 			$options_sha256,
 			count( $options_payload['options'] ),
 			$uploads_manifest,
@@ -204,6 +210,17 @@ final class Capturer {
 	}
 
 	/**
+	 * @param array<string, array<string, array<string, mixed>>> $owned_payload
+	 */
+	private function count_owned_entries( array $owned_payload ): int {
+		$n = 0;
+		foreach ( $owned_payload as $by_slug ) {
+			$n += count( $by_slug );
+		}
+		return $n;
+	}
+
+	/**
 	 * @param array{post_count: int, sha256: string}                 $wxr_summary
 	 * @param array{text: string, file_count: int, total_bytes: int} $uploads_manifest
 	 * @param array<string, mixed>                                   $adapter_state
@@ -212,6 +229,8 @@ final class Capturer {
 		string $adapter_name,
 		SnapshotScope $scope,
 		array $wxr_summary,
+		string $owned_sha256,
+		int $owned_count,
 		string $options_sha256,
 		int $options_count,
 		array $uploads_manifest,
@@ -232,14 +251,18 @@ final class Capturer {
 			),
 			'adapter'  => $adapter_name,
 			'scope'    => array(
-				'post_types'     => $scope->post_types,
-				'option_keys'    => $scope->option_keys,
-				'theme_mods_for' => $scope->theme_mods_for,
+				'post_types_additive' => $scope->post_types_additive,
+				'post_types_owned'    => $scope->post_types_owned,
+				'option_keys'         => $scope->option_keys,
+				'theme_mods_for'      => $scope->theme_mods_for,
 			),
 			'contents' => array(
 				'wxr'                 => 'content.xml.gz',
 				'wxr_sha256'          => $wxr_summary['sha256'],
 				'wxr_post_count'      => $wxr_summary['post_count'],
+				'templates'           => 'templates.json',
+				'templates_sha256'    => $owned_sha256,
+				'templates_count'     => $owned_count,
 				'options'             => 'options.json',
 				'options_sha256'      => $options_sha256,
 				'options_count'       => $options_count,
