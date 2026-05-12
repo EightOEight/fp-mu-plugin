@@ -40,29 +40,35 @@ final class CliAdapterFseTest extends TestCase {
 		$this->assertFalse( ( new Fse() )->detect() );
 	}
 
-	public function test_scope_post_types_cover_fse_design_surface(): void {
+	public function test_scope_owned_post_types_cover_fse_design_surface(): void {
+		// FSE CPTs are upsert-on-apply via templates.json (v4 split).
+		// The Fse adapter owns these end-to-end.
 		Functions\when( 'get_stylesheet' )->justReturn( 'twentytwentyfive' );
 		$scope = ( new Fse() )->scope();
-		$this->assertContains( 'wp_template', $scope->post_types );
-		$this->assertContains( 'wp_template_part', $scope->post_types );
-		$this->assertContains( 'wp_global_styles', $scope->post_types );
-		$this->assertContains( 'wp_navigation', $scope->post_types );
+		$this->assertContains( 'wp_template', $scope->post_types_owned );
+		$this->assertContains( 'wp_template_part', $scope->post_types_owned );
+		$this->assertContains( 'wp_global_styles', $scope->post_types_owned );
+		$this->assertContains( 'wp_navigation', $scope->post_types_owned );
 	}
 
-	public function test_scope_post_types_include_attachment_for_uploads(): void {
-		// The v2 era left attachment out-of-scope; v3 + Fse adapter
-		// includes it so images captured by Site Editor land cleanly on
-		// apply (closes the FSE-Corp image-404 follow-up).
+	public function test_scope_additive_post_types_cover_user_content(): void {
+		// User-editable content goes via WXR with INSERT-only semantics
+		// (page/post/attachment). Existing rows on the target are
+		// preserved.
 		Functions\when( 'get_stylesheet' )->justReturn( 'twentytwentyfive' );
 		$scope = ( new Fse() )->scope();
-		$this->assertContains( 'attachment', $scope->post_types );
+		$this->assertContains( 'page', $scope->post_types_additive );
+		$this->assertContains( 'post', $scope->post_types_additive );
+		$this->assertContains( 'attachment', $scope->post_types_additive );
 	}
 
-	public function test_scope_post_types_include_page_and_post(): void {
+	public function test_scope_split_has_no_overlap(): void {
+		// A post_type must be in exactly one bucket; can't be both
+		// additive and owned.
 		Functions\when( 'get_stylesheet' )->justReturn( 'twentytwentyfive' );
-		$scope = ( new Fse() )->scope();
-		$this->assertContains( 'page', $scope->post_types );
-		$this->assertContains( 'post', $scope->post_types );
+		$scope   = ( new Fse() )->scope();
+		$overlap = array_intersect( $scope->post_types_additive, $scope->post_types_owned );
+		$this->assertSame( array(), $overlap );
 	}
 
 	public function test_scope_option_keys_cover_site_identity(): void {

@@ -62,16 +62,24 @@ final class Fse implements AdapterInterface {
 
 	public function scope(): SnapshotScope {
 		return new SnapshotScope(
-			post_types:     array(
+			post_types_additive: array(
+				// User-editable content. WXR-shipped, INSERT-only on
+				// apply — existing rows by GUID are preserved.
+				'page',
+				'post',
+				'attachment',
+			),
+			post_types_owned:    array(
+				// Design state the adapter owns end-to-end. Captured to
+				// templates.json; apply UPSERTs by post_name+post_type
+				// so designer iteration propagates. See iteration-ux.md
+				// in the workspace .aidocs/ for the empirical motivation.
 				'wp_template',
 				'wp_template_part',
 				'wp_global_styles',
 				'wp_navigation',
-				'attachment',
-				'page',
-				'post',
 			),
-			option_keys:    array(
+			option_keys:         array(
 				'blogname',
 				'blogdescription',
 				'show_on_front',
@@ -82,7 +90,7 @@ final class Fse implements AdapterInterface {
 				'site_logo',
 				'custom_logo',
 			),
-			theme_mods_for: $this->active_stylesheet_or_empty(),
+			theme_mods_for:      $this->active_stylesheet_or_empty(),
 		);
 	}
 

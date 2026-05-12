@@ -2,7 +2,7 @@
 /**
  * Snapshot manifest builder for `wp fp snapshot`.
  *
- * Builds the `fp.snapshot/v3` manifest as a nested array and emits it
+ * Builds the `fp.snapshot/v4` manifest as a nested array and emits it
  * as a stable, deterministic YAML document. "Deterministic" matters:
  * future phases cosign-sign the manifest content hash, so any
  * non-determinism (different key order, trailing whitespace, etc.)
@@ -22,7 +22,7 @@ namespace FrankenPress\Cli\Snapshot;
 
 final class Manifest {
 
-	public const SCHEMA = 'fp.snapshot/v3';
+	public const SCHEMA = 'fp.snapshot/v4';
 
 	/**
 	 * @param array<string, mixed> $data Top-level manifest keys, already populated

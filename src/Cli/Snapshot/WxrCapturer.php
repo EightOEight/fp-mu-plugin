@@ -76,15 +76,16 @@ final class WxrCapturer {
 
 	/**
 	 * Run the SQL queries that turn a SnapshotScope into a concrete
-	 * list of post IDs. v3 scope is a flat `post_types` list — every
-	 * row of each declared CPT is in scope (no marker-based filtering).
+	 * list of post IDs. v4: only `post_types_additive` ships via WXR.
+	 * Owned post types go to `templates.json` for upsert semantics —
+	 * see {@see OwnedPostsCapturer}.
 	 *
 	 * @return array<int, int>
 	 */
 	private function resolve_post_ids( SnapshotScope $scope ): array {
 		$ids = array();
 
-		foreach ( $scope->post_types as $post_type ) {
+		foreach ( $scope->post_types_additive as $post_type ) {
 			$sql  = sprintf(
 				"SELECT ID FROM %s WHERE post_type = '%s'",
 				$this->table( 'posts' ),

@@ -18,8 +18,13 @@ final class CliSnapshotScopeTest extends TestCase {
 		$this->assertTrue( ( new SnapshotScope() )->is_empty() );
 	}
 
-	public function test_scope_with_post_type_is_not_empty(): void {
-		$s = new SnapshotScope( post_types: array( 'wp_template' ) );
+	public function test_scope_with_additive_post_type_is_not_empty(): void {
+		$s = new SnapshotScope( post_types_additive: array( 'page' ) );
+		$this->assertFalse( $s->is_empty() );
+	}
+
+	public function test_scope_with_owned_post_type_is_not_empty(): void {
+		$s = new SnapshotScope( post_types_owned: array( 'wp_template' ) );
 		$this->assertFalse( $s->is_empty() );
 	}
 
@@ -33,15 +38,27 @@ final class CliSnapshotScopeTest extends TestCase {
 		$this->assertFalse( $s->is_empty() );
 	}
 
-	public function test_merged_with_dedups_post_types(): void {
-		$a = new SnapshotScope( post_types: array( 'wp_template', 'wp_template_part' ) );
-		$b = new SnapshotScope( post_types: array( 'wp_template_part', 'wp_global_styles' ) );
+	public function test_merged_with_dedups_additive_post_types(): void {
+		$a = new SnapshotScope( post_types_additive: array( 'page', 'post' ) );
+		$b = new SnapshotScope( post_types_additive: array( 'post', 'attachment' ) );
+
+		$merged = $a->merged_with( $b );
+
+		$this->assertSame(
+			array( 'page', 'post', 'attachment' ),
+			$merged->post_types_additive
+		);
+	}
+
+	public function test_merged_with_dedups_owned_post_types(): void {
+		$a = new SnapshotScope( post_types_owned: array( 'wp_template', 'wp_template_part' ) );
+		$b = new SnapshotScope( post_types_owned: array( 'wp_template_part', 'wp_global_styles' ) );
 
 		$merged = $a->merged_with( $b );
 
 		$this->assertSame(
 			array( 'wp_template', 'wp_template_part', 'wp_global_styles' ),
-			$merged->post_types
+			$merged->post_types_owned
 		);
 	}
 

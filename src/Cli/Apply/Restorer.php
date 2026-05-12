@@ -1,6 +1,6 @@
 <?php
 /**
- * Snapshot restorer — orchestrates `wp fp apply` in fp.snapshot/v3.
+ * Snapshot restorer — orchestrates `wp fp apply` in fp.snapshot/v4.
  *
  * Inverse of {@see \FrankenPress\Cli\Snapshot\Capturer}. Reads a
  * snapshot directory, verifies its integrity, imports the WXR via
@@ -41,13 +41,16 @@ final class Restorer {
 	public const APPLIED_SHA256_OPTION = 'fp_snapshot_applied_sha256';
 
 	/**
-	 * @param string                       $snapshot_dir   Local directory with manifest.json + content.xml.gz + options.json.
-	 * @param string                       $target_url     home_url() at apply time.
-	 * @param array<int, AdapterInterface> $adapters       Registered adapters; the one whose name() matches manifest.adapter is fired.
-	 * @param callable                     $wp_runner      fn(string $cmd, array $assoc): mixed — wraps WP_CLI::runcommand.
-	 * @param callable                     $option_reader  fn(string $key): mixed.
-	 * @param callable                     $option_writer  fn(string $key, mixed $value, bool $autoload): bool.
-	 * @param callable                     $theme_mod_set  fn(string $stylesheet, string $key, mixed $value): void.
+	 * @param string                       $snapshot_dir    Local directory with manifest.json + content.xml.gz + options.json + templates.json.
+	 * @param string                       $target_url      home_url() at apply time.
+	 * @param array<int, AdapterInterface> $adapters        Registered adapters; the one whose name() matches manifest.adapter is fired.
+	 * @param callable                     $wp_runner       fn(string $cmd, array $assoc): mixed — wraps WP_CLI::runcommand.
+	 * @param callable                     $option_reader   fn(string $key): mixed.
+	 * @param callable                     $option_writer   fn(string $key, mixed $value, bool $autoload): bool.
+	 * @param callable                     $theme_mod_set   fn(string $stylesheet, string $key, mixed $value): void.
+	 * @param callable                     $owned_finder    fn(string $post_type, string $slug): ?int — returns post ID or null. Wraps `get_posts` for testability.
+	 * @param callable                     $owned_updater   fn(int $post_id, array $fields, array $meta): void — wraps `wp_update_post` + `update_post_meta`.
+	 * @param callable                     $owned_inserter  fn(string $post_type, string $slug, array $fields, array $meta): int — wraps `wp_insert_post` + `update_post_meta`. Returns the new post ID.
 	 */
 	public function __construct(
 		private string $snapshot_dir,
@@ -57,6 +60,9 @@ final class Restorer {
 		private $option_reader,
 		private $option_writer,
 		private $theme_mod_set,
+		private $owned_finder,
+		private $owned_updater,
+		private $owned_inserter,
 	) {}
 
 	/**
@@ -74,8 +80,8 @@ final class Restorer {
 		}
 
 		$schema = (string) ( $manifest['schema'] ?? '' );
-		if ( 'fp.snapshot/v3' !== $schema ) {
-			throw new RuntimeException( "manifest schema {$schema} is not supported by this fp build (accepts fp.snapshot/v3)" );
+		if ( 'fp.snapshot/v4' !== $schema ) {
+			throw new RuntimeException( "manifest schema {$schema} is not supported by this fp build (accepts fp.snapshot/v4)" );
 		}
 
 		if ( $this->already_applied( $id, $expected_sha ) ) {
@@ -85,25 +91,29 @@ final class Restorer {
 		$wxr_path = $this->snapshot_dir . '/content.xml.gz';
 		$this->verify_blob( $wxr_path, $expected_sha );
 
-		// Stage 1: import the WXR.
+		// Stage 1: import the WXR (post_types_additive — INSERT-only).
 		$this->import_wxr( $wxr_path );
 
-		// Stage 2: apply the scoped options.
+		// Stage 2: upsert the owned posts (post_types_owned — UPSERT
+		// by post_name+post_type so designer iteration propagates).
+		$this->apply_owned_posts();
+
+		// Stage 3: apply the scoped options.
 		$this->apply_options();
 
-		// Stage 3: search-replace URLs in the imported content.
+		// Stage 4: search-replace URLs in the imported content.
 		$source_url = (string) ( $manifest['source']['site_url'] ?? '' );
 		if ( '' !== $source_url && $source_url !== $this->target_url ) {
 			$this->retarget_urls( $source_url, $this->target_url );
 		}
 
-		// Stage 4: adapter post_apply hook (single adapter in v3).
+		// Stage 5: adapter post_apply hook (single adapter).
 		$this->fire_adapter(
 			(string) ( $manifest['adapter'] ?? '' ),
 			(array) ( $manifest['adapter_state'] ?? array() )
 		);
 
-		// Stage 5: idempotency markers.
+		// Stage 6: idempotency markers.
 		( $this->option_writer )( self::APPLIED_REF_OPTION, $id, true );
 		( $this->option_writer )( self::APPLIED_SHA256_OPTION, $expected_sha, true );
 
@@ -381,6 +391,57 @@ final class Restorer {
 			// the real error. We don't want to mask that with a
 			// secondary teardown exception. Best-effort.
 			error_log( 'fp apply: WP-Importer teardown deactivate failed: ' . $e->getMessage() );
+		}
+	}
+
+	/**
+	 * Apply the templates.json sidecar — upsert each entry by
+	 * `post_name + post_type`. Existing rows get `wp_update_post`;
+	 * missing rows get `wp_insert_post`. Postmeta in `meta` is set
+	 * via `update_post_meta` after the post fields land.
+	 *
+	 * Solves the v3 silent-skip problem where WP-Importer's GUID
+	 * dedup retained existing FSE-CPT rows on second-apply, blocking
+	 * designer iteration. See `iteration-ux.md` in the workspace
+	 * `.aidocs/` for the reproduction.
+	 */
+	private function apply_owned_posts(): void {
+		$path = $this->snapshot_dir . '/templates.json';
+		if ( ! is_file( $path ) ) {
+			return;
+		}
+		$raw = file_get_contents( $path );
+		if ( false === $raw || '' === $raw ) {
+			return;
+		}
+		$payload = json_decode( $raw, true );
+		if ( ! is_array( $payload ) ) {
+			return;
+		}
+
+		foreach ( $payload as $post_type => $by_slug ) {
+			if ( ! is_string( $post_type ) || ! is_array( $by_slug ) ) {
+				continue;
+			}
+			foreach ( $by_slug as $slug => $entry ) {
+				if ( ! is_string( $slug ) || '' === $slug || ! is_array( $entry ) ) {
+					continue;
+				}
+				$fields = array(
+					'post_title'   => (string) ( $entry['post_title'] ?? '' ),
+					'post_content' => (string) ( $entry['post_content'] ?? '' ),
+					'post_status'  => (string) ( $entry['post_status'] ?? 'publish' ),
+					'post_excerpt' => (string) ( $entry['post_excerpt'] ?? '' ),
+				);
+				$meta   = is_array( $entry['meta'] ?? null ) ? (array) $entry['meta'] : array();
+
+				$existing_id = ( $this->owned_finder )( $post_type, $slug );
+				if ( null !== $existing_id ) {
+					( $this->owned_updater )( (int) $existing_id, $fields, $meta );
+				} else {
+					( $this->owned_inserter )( $post_type, $slug, $fields, $meta );
+				}
+			}
 		}
 	}
 
