@@ -105,16 +105,20 @@ final class Restorer {
 		// adapters that need to ship editor-content.
 		$this->import_wxr( $wxr_path );
 
-		// Stage 2: upsert the owned posts (post_types_owned — UPSERT
-		// by post_name+post_type so designer iteration propagates).
-		$this->apply_owned_posts();
-
-		// Stage 3: upsert attachments referenced by
-		// `option_keys_attachment_refs` + copy their binary files into
-		// `wp_upload_dir()` (S3UploadsBootstrap's stream wrapper takes
-		// it from there). Returns a map of captured-ID → local-ID for
-		// the option-remap step below.
+		// Stage 2: upsert attachments + copy binaries FIRST so we have
+		// the captured-ID → local-ID remap available for the owned-
+		// posts rewrite + options remap. AttachmentRefCapturer captures
+		// both option-referenced (site_logo etc.) and block-inline
+		// (`<!-- wp:image {"id":42} -->`) attachments; both need their
+		// IDs remapped on apply.
 		$id_remap = $this->apply_attachments();
+
+		// Stage 3: upsert the owned posts (post_types_owned — UPSERT
+		// by post_name+post_type so designer iteration propagates).
+		// Block-attribute `"id":<captured>` and `wp-image-<captured>`
+		// CSS-class references in post_content are rewritten to the
+		// local attachment IDs via $id_remap before the upsert lands.
+		$this->apply_owned_posts( $id_remap );
 
 		// Stage 4: apply the scoped options, remapping attachment-ID
 		// values via $id_remap so site_logo/site_icon/custom_logo land
@@ -426,7 +430,10 @@ final class Restorer {
 	 * designer iteration. See `iteration-ux.md` in the workspace
 	 * `.aidocs/` for the reproduction.
 	 */
-	private function apply_owned_posts(): void {
+	/**
+	 * @param array<int, int> $attachment_id_remap captured_id => local_id
+	 */
+	private function apply_owned_posts( array $attachment_id_remap = array() ): void {
 		$path = $this->snapshot_dir . '/templates.json';
 		if ( ! is_file( $path ) ) {
 			return;
@@ -448,9 +455,13 @@ final class Restorer {
 				if ( ! is_string( $slug ) || '' === $slug || ! is_array( $entry ) ) {
 					continue;
 				}
+				$post_content = (string) ( $entry['post_content'] ?? '' );
+				if ( ! empty( $attachment_id_remap ) && '' !== $post_content ) {
+					$post_content = $this->rewrite_attachment_ids_in_content( $post_content, $attachment_id_remap );
+				}
 				$fields = array(
 					'post_title'   => (string) ( $entry['post_title'] ?? '' ),
-					'post_content' => (string) ( $entry['post_content'] ?? '' ),
+					'post_content' => $post_content,
 					'post_status'  => (string) ( $entry['post_status'] ?? 'publish' ),
 					'post_excerpt' => (string) ( $entry['post_excerpt'] ?? '' ),
 				);
@@ -464,6 +475,41 @@ final class Restorer {
 				}
 			}
 		}
+	}
+
+	/**
+	 * Rewrite `"id":<captured>` JSON block-attrs and
+	 * `wp-image-<captured>` CSS-class references in $content to the
+	 * local attachment IDs from $remap.
+	 *
+	 * Only rewrites integers that are KEYS in $remap — other numeric
+	 * "id" values (e.g. block ID references that aren't attachments)
+	 * stay untouched.
+	 *
+	 * @param array<int, int> $remap
+	 */
+	private function rewrite_attachment_ids_in_content( string $content, array $remap ): string {
+		// `"id":42` (block attr JSON). The capturing group covers the
+		// integer; the callback decides whether to remap.
+		$content = (string) preg_replace_callback(
+			'/("id"\s*:\s*)(\d+)/',
+			static function ( array $m ) use ( $remap ): string {
+				$captured = (int) $m[2];
+				return isset( $remap[ $captured ] ) ? $m[1] . (string) $remap[ $captured ] : $m[0];
+			},
+			$content
+		);
+		// `class="... wp-image-42 ..."` (img tag CSS class). Same
+		// remap policy.
+		$content = (string) preg_replace_callback(
+			'/wp-image-(\d+)/',
+			static function ( array $m ) use ( $remap ): string {
+				$captured = (int) $m[1];
+				return isset( $remap[ $captured ] ) ? 'wp-image-' . (string) $remap[ $captured ] : $m[0];
+			},
+			$content
+		);
+		return $content;
 	}
 
 	/**

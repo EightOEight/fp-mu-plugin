@@ -103,7 +103,8 @@ final class Command {
 		$active_stylesheet = (string) get_option( 'stylesheet', '' );
 		$meta_reader       = static fn ( int $post_id, string $key ): mixed => get_post_meta( $post_id, $key, true );
 
-		$post_loader = static fn ( int $id ): ?object => get_post( $id );
+		$post_loader   = static fn ( int $id ): ?object => get_post( $id );
+		$blocks_parser = static fn ( string $content ): array => function_exists( 'parse_blocks' ) ? parse_blocks( $content ) : array();
 
 		$capturer = new Capturer(
 			$output_dir,
@@ -117,7 +118,7 @@ final class Command {
 			new \FrankenPress\Cli\Snapshot\WxrCapturer( $wp_runner, $sql_runner ),
 			new \FrankenPress\Cli\Snapshot\OwnedPostsCapturer( $sql_runner, $meta_reader, $active_stylesheet ),
 			new \FrankenPress\Cli\Snapshot\OptionsCapturer( $option_get ),
-			new \FrankenPress\Cli\Snapshot\AttachmentRefCapturer( $option_get, $post_loader, $meta_reader, $this->uploads_dir() ),
+			new \FrankenPress\Cli\Snapshot\AttachmentRefCapturer( $option_get, $post_loader, $meta_reader, $blocks_parser, $this->uploads_dir() ),
 		);
 
 		try {

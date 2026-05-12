@@ -113,7 +113,7 @@ final class Capturer {
 		file_put_contents( $this->output_dir . '/options.json', $options_json );
 		$options_sha256 = hash( 'sha256', $options_json );
 
-		$attachments_payload = $this->attachments->capture( $scope );
+		$attachments_payload = $this->attachments->capture( $scope, $owned_payload );
 		$attachments_json    = json_encode( $attachments_payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) . "\n";
 		file_put_contents( $this->output_dir . '/attachments.json', $attachments_json );
 		$attachments_sha256 = hash( 'sha256', $attachments_json );
