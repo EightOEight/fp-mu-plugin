@@ -201,10 +201,29 @@ final class Restorer {
 			fclose( $out );
 			gzclose( $gz );
 
-			( $this->wp_runner )(
-				sprintf( 'import %s --authors=skip --skip=image_resize', escapeshellarg( $xml_path ) ),
-				array()
-			);
+			// Run `wp import` as a fresh subprocess (NOT via
+			// WP_CLI::runcommand with `launch => false`).
+			//
+			// WP-Importer's main file early-returns unless
+			// `WP_LOAD_IMPORTERS` is defined. wp-cli's `import` command
+			// package defines that constant in its `load_import_class()`
+			// helper at top-level dispatch — but `runcommand(..., launch
+			// => false)` shares the parent process where wp-cli already
+			// loaded all plugins (incl. WP-Importer) with `WP_LOAD_IMPORTERS`
+			// UNDEFINED. Result: WP-Importer's main file short-circuited
+			// on first load, `WP_Import` class never defined, and the
+			// inner `import` command bails with "WordPress Importer
+			// needs to be activated." PHP's `require_once` won't re-
+			// evaluate the file no matter how late we define the
+			// constant — once it's in `get_included_files()`, it's done.
+			//
+			// proc_open of `wp import ...` as a fresh subprocess
+			// guarantees wp-cli's top-level dispatch path runs:
+			// `load_import_class()` defines WP_LOAD_IMPORTERS, then
+			// `require_once` the plugin file fresh — and this time the
+			// file executes its body, defining WP_Import. The whole
+			// class hierarchy comes up cleanly.
+			$this->run_wp_import( $xml_path );
 		} finally {
 			if ( file_exists( $xml_path ) ) {
 				unlink( $xml_path );
@@ -214,6 +233,80 @@ final class Restorer {
 			}
 			$this->teardown_wxr_importer( $mode );
 		}
+	}
+
+	/**
+	 * Run `wp import <file> --authors=skip --skip=image_resize` as a
+	 * fresh subprocess (not via WP_CLI::runcommand). See the comment
+	 * block in import_wxr() for why this can't go through the shared
+	 * wp_runner closure.
+	 *
+	 * Stderr is targeted at a regular file (same pattern as
+	 * WxrCapturer::run_export) — wp import emits a progress line per
+	 * post and `wp_runner`'s default in-process invocation deadlocks
+	 * when the kernel pipe buffer fills.
+	 */
+	private function run_wp_import( string $xml_path ): void {
+		$wp_bin     = $this->locate_wp_binary();
+		$stderr_log = $xml_path . '.stderr.log';
+		$cmd        = array(
+			$wp_bin,
+			'--allow-root',
+			'--path=' . $this->wp_path(),
+			'import',
+			$xml_path,
+			'--authors=skip',
+			'--skip=image_resize',
+		);
+		$descs      = array(
+			0 => array( 'file', '/dev/null', 'r' ),
+			1 => array( 'pipe', 'w' ),
+			2 => array( 'file', $stderr_log, 'w' ),
+		);
+		$proc       = proc_open( $cmd, $descs, $pipes );
+		if ( ! is_resource( $proc ) ) {
+			throw new RuntimeException( 'apply: proc_open(wp import) failed' );
+		}
+		// Drain stdout to keep the child unblocked. wp-cli's import
+		// command writes a progress line per post; we don't need the
+		// content, just need to keep reading so the pipe doesn't fill.
+		while ( ! feof( $pipes[1] ) ) {
+			$chunk = fread( $pipes[1], 64 * 1024 );
+			if ( false === $chunk || '' === $chunk ) {
+				break;
+			}
+		}
+		fclose( $pipes[1] );
+		$exit_code = proc_close( $proc );
+
+		$stderr = is_file( $stderr_log ) ? (string) file_get_contents( $stderr_log ) : '';
+		@unlink( $stderr_log );
+
+		if ( 0 !== $exit_code ) {
+			throw new RuntimeException(
+				sprintf(
+					'apply: wp import exited %d%s',
+					$exit_code,
+					'' !== trim( $stderr ) ? ' (stderr: ' . trim( $stderr ) . ')' : ''
+				)
+			);
+		}
+	}
+
+	private function locate_wp_binary(): string {
+		foreach ( array( '/usr/local/bin/wp', '/usr/bin/wp' ) as $candidate ) {
+			if ( is_executable( $candidate ) ) {
+				return $candidate;
+			}
+		}
+		return 'wp';
+	}
+
+	private function wp_path(): string {
+		if ( defined( 'ABSPATH' ) ) {
+			return rtrim( (string) constant( 'ABSPATH' ), '/' );
+		}
+		return '';
 	}
 
 	/**
