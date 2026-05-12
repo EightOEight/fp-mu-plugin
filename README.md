@@ -12,7 +12,7 @@ CLI surface, all platform-housekeeping:
 | **SouinInvalidator** | `DEL`s Souin's Redis cache entries directly on `save_post`, `clean_post_cache`, `switch_theme`, etc. — Souin's documented HTTP invalidation APIs are broken in cache-handler v0.16.0 (see [`runtime/PHASE-0.md`](https://github.com/frankenpress/runtime/blob/main/PHASE-0.md)). |
 | **SiteHealth** | Suppresses Site Health tests whose failure is intentional under the immutable-image lockdown (`background_updates`, FS-write probes, `plugin_theme_auto_updates`), adds a passing FrankenPress-branded test that explains why, and adds an SMTP-reachability test when SMTPMailer is configured. |
 | **SMTPMailer** | Wires the global PHPMailer to send via SMTP from `FP_SMTP_*` env vars. The runtime image ships no MTA, so without this every `wp_mail()` call fails silently. Transport-agnostic (Postmark, SendGrid, Mailgun, AWS SES, in-cluster relay). Opt-in: no-op when `FP_SMTP_HOST` is unset. |
-| **Cli\\Command** *(WP-CLI only)* | Registers `wp fp snapshot` + `wp fp apply` subcommands. **Adapter-scoped, WXR-based, additive.** Snapshots capture only what a premium-theme adapter declares is its blast radius (e.g. The7-imported posts + theme settings); user-generated content (orders, comments, accounts) is never touched. Apply uses WP's native WXR importer (additive — never DROP, never DELETE). Schema: `fp.snapshot/v2`. Loads only under `WP_CLI` — zero overhead on web requests. |
+| **Cli\\Command** *(WP-CLI only)* | Registers `wp fp snapshot` + `wp fp apply` subcommands. **Adapter-scoped, WXR-based, additive.** Snapshots capture only what the active adapter declares is its blast radius (the bundled `Fse` adapter covers FSE block-theme design state — templates, template parts, global styles, navigation, attachments, pages, posts, site-identity options). User-generated content (orders, comments, accounts) is never in scope and never touched. Apply uses WP's native WXR importer + scoped `update_option`. Schema: `fp.snapshot/v3`. Loads only under `WP_CLI` — zero overhead on web requests. |
 
 That's the entire mu-plugin. Anything else (object cache, multisite URL fixing,
 WooCommerce log handlers, Prometheus metrics) is **optional** by the FrankenPress
@@ -29,26 +29,29 @@ that's committed into the site repo at `web/imports/<slug>/`.
 
 ```bash
 # Capture local state into web/imports/<slug>/
-wp fp snapshot --slug=architect-2 --note="The7 FSE Architect demo + accent tweak"
-# → web/imports/architect-2/{manifest.yaml,manifest.json,content.xml.gz,options.json,composer-patch.json,uploads-manifest.txt}
+wp fp snapshot --slug=homepage-rev2 --note="Block-pattern refresh + accent tweak"
+# → web/imports/homepage-rev2/{manifest.yaml,manifest.json,content.xml.gz,options.json,uploads-manifest.txt}
 
 # Designer commits the directory + opens a site-repo PR. The site image
 # is rebuilt with web/imports/ baked in; the chart's install Job iterates
 # the dir on every reconcile and runs `wp fp apply` per snapshot.
 
 # Apply a snapshot to the current site (used by the chart's install Job)
-wp fp apply --snapshot-dir=/app/web/imports/architect-2
+wp fp apply --snapshot-dir=/app/web/imports/homepage-rev2
 ```
 
 ### Safety properties
 
-- **Adapter-scoped.** Each premium-theme adapter (The7, Avada, Divi, ...)
-  declares what rows it considers in-scope for a snapshot
-  (`post_types_with_marker`, `option_patterns`, etc.). The capture path
-  honors the union of fired adapters' scopes — nothing else makes it
-  into the snapshot. WooCommerce orders / user accounts / comments are
-  **never** in any theme adapter's scope and thus can never be carried
-  by `fp` snapshot in any direction.
+- **Adapter-scoped.** The active adapter declares what rows it
+  considers in-scope for a snapshot (`post_types`, `option_keys`,
+  `theme_mods_for`). The capture path honors that scope exactly —
+  nothing else makes it into the snapshot. The bundled `Fse` adapter
+  scope covers FSE block-theme design surface (templates, template
+  parts, global styles, navigation, attachments, pages, posts) +
+  curated site-identity option keys (`blogname`, `show_on_front`,
+  `page_on_front`, etc.). WooCommerce orders / user accounts /
+  comments are **never** in any adapter's scope and thus can never
+  be carried by `fp` snapshot in any direction.
 - **WXR-based content + JSON options sidecar.** Content (posts, terms,
   menus) ships as WXR — the format WP's native importer ingests
   additively (only INSERTs, dedups terms by slug, remaps post IDs on
@@ -61,7 +64,7 @@ wp fp apply --snapshot-dir=/app/web/imports/architect-2
 
 `apply` stamps `fp_snapshot_applied_ref` and `fp_snapshot_applied_sha256`
 options after success; subsequent invocations with the same snapshot
-short-circuit cleanly. Schema: `fp.snapshot/v2`.
+short-circuit cleanly. Schema: `fp.snapshot/v3`.
 
 ## Install
 

@@ -76,32 +76,15 @@ final class WxrCapturer {
 
 	/**
 	 * Run the SQL queries that turn a SnapshotScope into a concrete
-	 * list of post IDs. Two paths:
-	 *
-	 *   - post_types_with_marker: posts of the right type that ALSO
-	 *     have the marker postmeta. INNER JOIN posts + postmeta.
-	 *   - post_types_full_capture: every post of the listed types.
+	 * list of post IDs. v3 scope is a flat `post_types` list — every
+	 * row of each declared CPT is in scope (no marker-based filtering).
 	 *
 	 * @return array<int, int>
 	 */
 	private function resolve_post_ids( SnapshotScope $scope ): array {
 		$ids = array();
 
-		foreach ( $scope->post_types_with_marker as $post_type => $meta_key ) {
-			$sql  = sprintf(
-				"SELECT DISTINCT p.ID FROM %s p INNER JOIN %s m ON p.ID = m.post_id WHERE p.post_type = '%s' AND m.meta_key = '%s'",
-				$this->table( 'posts' ),
-				$this->table( 'postmeta' ),
-				$this->escape_string( $post_type ),
-				$this->escape_string( $meta_key )
-			);
-			$rows = ( $this->sql_runner )( $sql );
-			foreach ( $rows as $row ) {
-				$ids[ (int) $row['ID'] ] = true;
-			}
-		}
-
-		foreach ( $scope->post_types_full_capture as $post_type ) {
+		foreach ( $scope->post_types as $post_type ) {
 			$sql  = sprintf(
 				"SELECT ID FROM %s WHERE post_type = '%s'",
 				$this->table( 'posts' ),

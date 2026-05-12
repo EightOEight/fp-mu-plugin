@@ -15,10 +15,10 @@ regular plugin (or a fork of this).
 | `FrankenPress\SouinInvalidator` | Connects directly to Redis and `DEL`s Souin's HTTP cache entries on `save_post`, `clean_post_cache`, comment status changes, theme switch, permalink change, global-option change. Bypasses cache-handler v0.16.0's broken HTTP invalidation APIs. |
 | `FrankenPress\SiteHealth` | Suppresses Site Health tests whose failure is intentional under the immutable-image lockdown (`background_updates`, FS-write probes, `plugin_theme_auto_updates`) and adds a passing FrankenPress-branded test that explains why those tests are gone. |
 | `FrankenPress\SMTPMailer` | Wires the global PHPMailer to send via SMTP when `FP_SMTP_HOST` is set. Without it, `wp_mail()` silently fails in the container (no MTA in the runtime image). |
-| `FrankenPress\Cli\Command` *(off the request path)* | Registers `wp fp snapshot` + `wp fp apply` WP-CLI subcommands. **Adapter-scoped, WXR-based, additive.** Snapshots capture only what a premium-theme adapter declares is its blast radius (e.g. The7-imported posts + theme settings) — user-generated content (orders, comments, accounts) is *never* in any snapshot. Apply uses WP's native WXR importer + `update_option` — strictly INSERT-or-UPDATE, never DROP. Schema: `fp.snapshot/v2`. Only loads under `WP_CLI` — zero overhead on web requests. |
+| `FrankenPress\Cli\Command` *(off the request path)* | Registers `wp fp snapshot` + `wp fp apply` WP-CLI subcommands. **Adapter-scoped, WXR-based, additive.** Snapshots capture only what the active adapter declares is its blast radius (the bundled `Fse` adapter covers FSE block-theme design state — templates, template parts, global styles, navigation, attachments, pages, posts, site-identity options) — user-generated content (orders, comments, accounts) is *never* in any snapshot. Apply uses WP's native WXR importer + `update_option` for scoped keys. Schema: `fp.snapshot/v3`. Only loads under `WP_CLI` — zero overhead on web requests. |
 
 Composer name: **`frankenpress/mu-plugin`** (PSR-4 namespace `FrankenPress\\`).
-Latest: `v0.5.0`.
+Latest: `v0.10.0` (FSE-only pivot — drops the `The7` adapter, schema bumps to `fp.snapshot/v3`).
 
 Public docs: **<https://docs.frankenpress.com/components/mu-plugin>**
 

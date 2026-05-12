@@ -17,13 +17,13 @@ final class CliManifestTest extends TestCase {
 	public function test_emits_flat_scalars(): void {
 		$out = ( new Manifest(
 			array(
-				'schema'  => 'fp.snapshot/v1',
+				'schema'  => 'fp.snapshot/v3',
 				'id'      => '01HXR2-architect-2',
 				'created' => '2026-05-11T09:14:22Z',
 			)
 		) )->to_yaml();
 
-		$expected = "schema: fp.snapshot/v1\nid: 01HXR2-architect-2\ncreated: \"2026-05-11T09:14:22Z\"\n";
+		$expected = "schema: fp.snapshot/v3\nid: 01HXR2-architect-2\ncreated: \"2026-05-11T09:14:22Z\"\n";
 
 		$this->assertSame( $expected, $out );
 	}
@@ -80,11 +80,11 @@ final class CliManifestTest extends TestCase {
 	public function test_emits_sequence(): void {
 		$out = ( new Manifest(
 			array(
-				'adapters_fired' => array( 'the7', 'avada' ),
+				'post_types' => array( 'wp_template', 'wp_template_part' ),
 			)
 		) )->to_yaml();
 
-		$this->assertSame( "adapters_fired:\n- the7\n- avada\n", $out );
+		$this->assertSame( "post_types:\n- wp_template\n- wp_template_part\n", $out );
 	}
 
 	public function test_emits_empty_sequence(): void {
@@ -101,14 +101,14 @@ final class CliManifestTest extends TestCase {
 
 	public function test_deterministic_for_identical_input(): void {
 		$data = array(
-			'schema'         => 'fp.snapshot/v1',
-			'id'             => '01HXR2',
-			'source'         => array(
+			'schema'  => 'fp.snapshot/v3',
+			'id'      => '01HXR2',
+			'source'  => array(
 				'site' => 'sts',
 				'env'  => 'local',
 				'git'  => array( 'site_repo' => 'github.com/x/y@abc' ),
 			),
-			'adapters_fired' => array( 'the7' ),
+			'adapter' => 'fse',
 		);
 
 		$a = ( new Manifest( $data ) )->to_yaml();
@@ -133,7 +133,7 @@ final class CliManifestTest extends TestCase {
 
 	public function test_to_array_round_trips(): void {
 		$data = array(
-			'schema' => 'fp.snapshot/v1',
+			'schema' => 'fp.snapshot/v3',
 			'id'     => 'foo',
 		);
 		$this->assertSame( $data, ( new Manifest( $data ) )->to_array() );

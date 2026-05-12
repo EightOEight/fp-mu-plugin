@@ -1,6 +1,6 @@
 <?php
 /**
- * Snapshot restorer — orchestrates `wp fp apply` in fp.snapshot/v2.
+ * Snapshot restorer — orchestrates `wp fp apply` in fp.snapshot/v3.
  *
  * Inverse of {@see \FrankenPress\Cli\Snapshot\Capturer}. Reads a
  * snapshot directory, verifies its integrity, imports the WXR via
@@ -43,7 +43,7 @@ final class Restorer {
 	/**
 	 * @param string                       $snapshot_dir   Local directory with manifest.json + content.xml.gz + options.json.
 	 * @param string                       $target_url     home_url() at apply time.
-	 * @param array<int, AdapterInterface> $adapters       Registered adapters (must match manifest.adapters_fired by name).
+	 * @param array<int, AdapterInterface> $adapters       Registered adapters; the one whose name() matches manifest.adapter is fired.
 	 * @param callable                     $wp_runner      fn(string $cmd, array $assoc): mixed — wraps WP_CLI::runcommand.
 	 * @param callable                     $option_reader  fn(string $key): mixed.
 	 * @param callable                     $option_writer  fn(string $key, mixed $value, bool $autoload): bool.
@@ -74,8 +74,8 @@ final class Restorer {
 		}
 
 		$schema = (string) ( $manifest['schema'] ?? '' );
-		if ( 'fp.snapshot/v2' !== $schema ) {
-			throw new RuntimeException( "manifest schema {$schema} is not supported by this fp build (accepts fp.snapshot/v2)" );
+		if ( 'fp.snapshot/v3' !== $schema ) {
+			throw new RuntimeException( "manifest schema {$schema} is not supported by this fp build (accepts fp.snapshot/v3)" );
 		}
 
 		if ( $this->already_applied( $id, $expected_sha ) ) {
@@ -97,9 +97,9 @@ final class Restorer {
 			$this->retarget_urls( $source_url, $this->target_url );
 		}
 
-		// Stage 4: adapter post_apply hooks.
-		$this->fire_adapters(
-			(array) ( $manifest['adapters_fired'] ?? array() ),
+		// Stage 4: adapter post_apply hook (single adapter in v3).
+		$this->fire_adapter(
+			(string) ( $manifest['adapter'] ?? '' ),
 			(array) ( $manifest['adapter_state'] ?? array() )
 		);
 
@@ -430,17 +430,27 @@ final class Restorer {
 	}
 
 	/**
-	 * @param array<int, string>                  $adapters_fired
-	 * @param array<string, array<string, mixed>> $adapter_state
+	 * Dispatch the single adapter named in the manifest. If the named
+	 * adapter isn't registered in this build, throw — the v3 design
+	 * forbids silent skip (the v2 behaviour was a footgun: snapshots
+	 * could LOOK applied while their adapter post_apply step was
+	 * silently no-op'd against a build that had since dropped the
+	 * adapter).
+	 *
+	 * @param array<string, mixed> $adapter_state
 	 */
-	private function fire_adapters( array $adapters_fired, array $adapter_state ): void {
-		foreach ( $this->adapters as $adapter ) {
-			$name = $adapter->name();
-			if ( ! in_array( $name, $adapters_fired, true ) ) {
-				continue;
-			}
-			$state = $adapter_state[ $name ] ?? array();
-			$adapter->post_apply( $state );
+	private function fire_adapter( string $adapter_name, array $adapter_state ): void {
+		if ( '' === $adapter_name ) {
+			throw new RuntimeException( 'manifest is missing required field `adapter`' );
 		}
+		foreach ( $this->adapters as $adapter ) {
+			if ( $adapter->name() === $adapter_name ) {
+				$adapter->post_apply( $adapter_state );
+				return;
+			}
+		}
+		throw new RuntimeException(
+			"manifest names adapter '{$adapter_name}' but no adapter with that name is registered in this build"
+		);
 	}
 }

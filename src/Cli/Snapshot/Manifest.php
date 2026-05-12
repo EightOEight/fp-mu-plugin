@@ -2,17 +2,16 @@
 /**
  * Snapshot manifest builder for `wp fp snapshot`.
  *
- * Builds the `fp.snapshot/v1` manifest as a nested array and emits it
+ * Builds the `fp.snapshot/v3` manifest as a nested array and emits it
  * as a stable, deterministic YAML document. "Deterministic" matters:
- * Phase 2 cosign-signs the manifest content hash, so any non-determinism
- * (different key order, trailing whitespace, etc.) breaks signature
- * verification on the apply side. The hand-rolled emitter here is
- * intentionally minimal — no anchor/alias support, no tag URIs, no
- * folded scalars. The Go-side `fp` binary parses manifests with a
- * standard YAML library; this emitter just has to produce something
- * that parser will accept and that hashes the same on identical input.
+ * future phases cosign-sign the manifest content hash, so any
+ * non-determinism (different key order, trailing whitespace, etc.)
+ * breaks signature verification on the apply side. The hand-rolled
+ * emitter here is intentionally minimal — no anchor/alias support, no
+ * tag URIs, no folded scalars.
  *
- * Schema reference: `.aidocs/fp-cli-design.md` §"Snapshot format".
+ * Schema reference: workspace `.aidocs/fse-only-pivot.md` §"fp.snapshot/v3
+ * shape".
  *
  * @package FrankenPress\Cli\Snapshot
  */
@@ -23,7 +22,7 @@ namespace FrankenPress\Cli\Snapshot;
 
 final class Manifest {
 
-	public const SCHEMA = 'fp.snapshot/v2';
+	public const SCHEMA = 'fp.snapshot/v3';
 
 	/**
 	 * @param array<string, mixed> $data Top-level manifest keys, already populated
