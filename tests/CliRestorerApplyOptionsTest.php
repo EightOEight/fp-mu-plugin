@@ -208,6 +208,8 @@ final class CliRestorerApplyOptionsTest extends TestCase {
 			static function (): void {},
 			static fn (): int => 0,
 			$page_finder,
+			static fn ( string $pt, ?string $theme ): array => array(),
+			static function (): void {},
 			'/tmp/uploads',
 			'http://target.example/app/uploads',
 		);

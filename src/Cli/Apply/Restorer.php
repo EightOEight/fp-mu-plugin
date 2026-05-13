@@ -69,6 +69,8 @@ final class Restorer {
 	 * @param callable                     $att_updater     fn(int $post_id, array $fields, array $meta): void.
 	 * @param callable                     $att_inserter    fn(array $fields, array $meta): int — wraps `wp_insert_post` for attachments.
 	 * @param callable                     $page_finder     fn(string $slug, string $post_type): ?int — resolves a captured page reference to the local post ID, or null when not present on the target. Used by the option_page_refs apply path to rewrite page_on_front / page_for_posts.
+	 * @param callable                     $owned_lister    fn(string $post_type, ?string $theme_slug): array<int, string> — lists existing owned-post rows on the target. For theme-bound types the closure filters by `wp_theme` taxonomy = $theme_slug. Returns post_id => slug. Used by the deletion-propagation reaper.
+	 * @param callable                     $owned_trasher   fn(int $post_id): void — wraps wp_trash_post. Reaper uses this to soft-delete orphan rows (recoverable from Trash); it does NOT hard-delete.
 	 * @param string                       $uploads_basedir Absolute path to `wp_upload_dir()['basedir']`. May be an `s3://` stream wrapper when S3UploadsBootstrap is active.
 	 * @param string                       $uploads_baseurl Public URL prefix for uploads (`wp_upload_dir()['baseurl']`). On FrankenPress with S3UploadsBootstrap this is the S3 bucket URL (or the configured CDN). Used to rewrite captured `<source>/app/uploads` URLs in block markup so attachment renders point at S3 rather than the WP host (which doesn't proxy /app/uploads/ to S3).
 	 */
@@ -87,6 +89,8 @@ final class Restorer {
 		private $att_updater,
 		private $att_inserter,
 		private $page_finder,
+		private $owned_lister,
+		private $owned_trasher,
 		private string $uploads_basedir,
 		private string $uploads_baseurl,
 	) {}
@@ -144,6 +148,16 @@ final class Restorer {
 		// CSS-class references in post_content are rewritten to the
 		// local attachment IDs via $id_remap before the upsert lands.
 		$this->apply_owned_posts( $id_remap );
+
+		// Stage 3b: reap orphan owned-post rows — for each
+		// post_types_owned type, trash any DB row whose slug is NOT
+		// in the captured manifest.contents.templates_slugs set.
+		// Theme-bound types are filtered to the source's active
+		// theme; non-theme-bound types (wp_navigation, wp_block) are
+		// excluded from reaping so editor-created entries survive.
+		// Trashes (not hard-deletes) — orphan rows are recoverable
+		// from wp_posts.post_status = 'trash'.
+		$this->reap_orphan_owned_posts( $manifest );
 
 		// Stage 4: apply the scoped options, remapping attachment-ID
 		// values via $id_remap so site_logo/site_icon/custom_logo land
@@ -666,6 +680,113 @@ final class Restorer {
 			},
 			$content
 		);
+	}
+
+	/**
+	 * Post types the reaper considers safe to trash orphans for.
+	 *
+	 * Theme-bound types (wp_template, wp_template_part, wp_global_styles)
+	 * are scoped to the source's active theme via the `wp_theme` tax_query
+	 * — only that theme's rows are inspected, so other themes' rows
+	 * survive untouched.
+	 *
+	 * `custom_css` is filtered by post_name = stylesheet, so only one
+	 * row is in scope; reaping it would only trash a stale rename
+	 * (unlikely but supported).
+	 *
+	 * `wp_navigation` and `wp_block` are intentionally EXCLUDED. Editors
+	 * may legitimately create non-snapshot wp_navigation menus or
+	 * synced patterns on prod, and trashing those without a clear
+	 * authoritative-source-of-truth signal would surprise users. If a
+	 * designer wants to delete a nav menu, they should delete it
+	 * explicitly via wp-cli on the target.
+	 */
+	private const REAPABLE_POST_TYPES = array(
+		'wp_template',
+		'wp_template_part',
+		'wp_global_styles',
+		'custom_css',
+	);
+
+	/**
+	 * Post types whose target-side query filters by `wp_theme` taxonomy
+	 * (must match the source's active stylesheet for the reaper to
+	 * consider a row).
+	 */
+	private const REAPER_THEME_BOUND_TAXONOMY = array(
+		'wp_template',
+		'wp_template_part',
+		'wp_global_styles',
+	);
+
+	/**
+	 * Trash any DB row of a reapable post_type whose slug isn't in
+	 * the captured manifest.contents.templates_slugs set.
+	 *
+	 * Soft-delete only (`wp_trash_post`) — orphan rows are recoverable
+	 * from `wp_posts.post_status = 'trash'` via the standard WP admin
+	 * Trash UI.
+	 *
+	 * Backward-compat: when the manifest predates this field
+	 * (templates_slugs absent), the reaper is a no-op.
+	 *
+	 * Safety: gated strictly on REAPABLE_POST_TYPES. Content types
+	 * (page, post, attachment, etc.) are NOT in the list and never
+	 * reached. The reaper can't touch a row whose post_type isn't
+	 * declared as owned by the active adapter.
+	 *
+	 * @param array<string, mixed> $manifest
+	 */
+	private function reap_orphan_owned_posts( array $manifest ): void {
+		$contents    = is_array( $manifest['contents'] ?? null ) ? (array) $manifest['contents'] : array();
+		$slugs_by_pt = is_array( $contents['templates_slugs'] ?? null ) ? (array) $contents['templates_slugs'] : array();
+		if ( empty( $slugs_by_pt ) ) {
+			return;
+		}
+		$source_theme = (string) ( $manifest['source']['source_theme'] ?? '' );
+
+		foreach ( self::REAPABLE_POST_TYPES as $post_type ) {
+			if ( ! isset( $slugs_by_pt[ $post_type ] ) || ! is_array( $slugs_by_pt[ $post_type ] ) ) {
+				// Post type wasn't captured in this snapshot (e.g. the
+				// adapter doesn't own custom_css yet). Skip rather than
+				// reap — absence of a captured set is not the same as
+				// "captured set is empty".
+				continue;
+			}
+			$captured_slugs = array();
+			foreach ( $slugs_by_pt[ $post_type ] as $s ) {
+				$captured_slugs[ (string) $s ] = true;
+			}
+
+			$theme_filter = in_array( $post_type, self::REAPER_THEME_BOUND_TAXONOMY, true )
+				? ( '' !== $source_theme ? $source_theme : null )
+				: null;
+
+			$existing = ( $this->owned_lister )( $post_type, $theme_filter );
+			if ( ! is_array( $existing ) ) {
+				continue;
+			}
+			foreach ( $existing as $post_id => $slug ) {
+				$slug = (string) $slug;
+				if ( '' === $slug || isset( $captured_slugs[ $slug ] ) ) {
+					continue;
+				}
+				$post_id = (int) $post_id;
+				if ( $post_id <= 0 ) {
+					continue;
+				}
+				( $this->owned_trasher )( $post_id );
+				error_log(
+					sprintf(
+						"fp apply: reaper trashed orphan %s row '%s' (ID %d, theme %s) — not in the snapshot's captured slug set. Recoverable from wp_posts.post_status='trash'.",
+						$post_type,
+						$slug,
+						$post_id,
+						$theme_filter ?? '(any)'
+					)
+				);
+			}
+		}
 	}
 
 	/**

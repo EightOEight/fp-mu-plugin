@@ -159,7 +159,8 @@ final class Capturer {
 			count( $attachments_payload['by_file'] ),
 			$binaries_summary,
 			$uploads_manifest,
-			$adapter_state
+			$adapter_state,
+			$this->collect_owned_slugs( $owned_payload )
 		);
 		$manifest_path = $this->output_dir . '/manifest.yaml';
 		file_put_contents( $manifest_path, $manifest->to_yaml() );
@@ -251,10 +252,41 @@ final class Capturer {
 	}
 
 	/**
+	 * Build a manifest-side `templates_slugs` map of
+	 * `post_type => [slug, ...]` from the captured owned payload.
+	 *
+	 * The apply path's reaper uses this to identify orphan rows on
+	 * the target (slugs that exist locally but aren't in the
+	 * captured set) and trash them so deleted-by-designer rows
+	 * eventually disappear from prod.
+	 *
+	 * @param array<string, array<string, array<string, mixed>>> $owned_payload
+	 * @return array<string, array<int, string>>
+	 */
+	private function collect_owned_slugs( array $owned_payload ): array {
+		$out = array();
+		foreach ( $owned_payload as $post_type => $by_slug ) {
+			$post_type = (string) $post_type;
+			$slugs     = array();
+			foreach ( array_keys( $by_slug ) as $slug ) {
+				$slug = (string) $slug;
+				if ( '' !== $slug ) {
+					$slugs[] = $slug;
+				}
+			}
+			sort( $slugs );
+			$out[ $post_type ] = $slugs;
+		}
+		ksort( $out );
+		return $out;
+	}
+
+	/**
 	 * @param array{post_count: int, sha256: string}                 $wxr_summary
 	 * @param array{file_count: int, total_bytes: int}               $binaries_summary
 	 * @param array{text: string, file_count: int, total_bytes: int} $uploads_manifest
 	 * @param array<string, mixed>                                   $adapter_state
+	 * @param array<string, array<int, string>>                      $templates_slugs Captured post_type => [slugs]; apply's reaper trashes any DB row whose slug isn't in the set.
 	 */
 	private function build_manifest(
 		string $adapter_name,
@@ -268,7 +300,8 @@ final class Capturer {
 		int $attachments_count,
 		array $binaries_summary,
 		array $uploads_manifest,
-		array $adapter_state
+		array $adapter_state,
+		array $templates_slugs
 	): Manifest {
 		$id   = $this->generate_id();
 		$data = array(
@@ -310,6 +343,11 @@ final class Capturer {
 				'uploads_manifest'     => 'uploads-manifest.txt',
 				'uploads_file_count'   => $uploads_manifest['file_count'],
 				'uploads_total_bytes'  => $uploads_manifest['total_bytes'],
+				// Apply's reaper iterates this map and trashes any
+				// DB row whose slug isn't in the captured set. Scoped
+				// to post_types_owned only — content types are
+				// structurally outside scope.
+				'templates_slugs'      => $templates_slugs,
 			),
 		);
 

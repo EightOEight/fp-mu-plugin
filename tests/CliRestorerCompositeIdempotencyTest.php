@@ -174,6 +174,8 @@ final class CliRestorerCompositeIdempotencyTest extends TestCase {
 			static function (): void {},
 			static fn (): int => 0,
 			static fn ( string $slug, string $type ): ?int => null,
+			static fn ( string $pt, ?string $theme ): array => array(),
+			static function (): void {},
 			'/tmp/uploads',
 			'http://target.example/app/uploads',
 		);
