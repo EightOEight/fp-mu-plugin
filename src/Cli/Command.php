@@ -159,6 +159,7 @@ final class Command {
 				$this->composer_packages_reader(),
 				$this->active_state_reader(),
 			),
+			$this->attachment_enumerator(),
 		);
 
 		try {
@@ -370,9 +371,22 @@ final class Command {
 			// att_inserter: wp_insert_post with post_type=attachment,
 			// then write the meta keys. Returns the new local post ID
 			// so the apply path can remap option values.
+			//
+			// post_author is set to 1 (the canonical first admin user
+			// created by the chart's `wp core install` Helm hook). Without
+			// it, the apply runs under wp-cli's user-less context →
+			// post_author defaults to 0, which the WP admin Media Library
+			// renders as "(no author)" — cosmetic but confusing for
+			// editors browsing the library. If user ID 1 doesn't exist
+			// on the target (unusual but possible), WP itself will store
+			// 1 anyway; the cosmetic display falls back to "(no author)"
+			// the same way it did before — no behavior regression.
 			static function ( array $fields, array $meta ): int {
 				$id = wp_insert_post(
-					array( 'post_type' => 'attachment' ) + $fields
+					array(
+						'post_type'   => 'attachment',
+						'post_author' => 1,
+					) + $fields
 				);
 				if ( is_wp_error( $id ) || ! is_int( $id ) || $id <= 0 ) {
 					throw new \RuntimeException( 'apply: wp_insert_post for attachment failed' );
@@ -634,6 +648,39 @@ final class Command {
 				'plugins' => $plugins,
 				'theme'   => $theme,
 			);
+		};
+	}
+
+	/**
+	 * Build the closure that enumerates every attached_file path
+	 * in the source media library, for the
+	 * unreferenced-attachment-warning pass in Capturer.
+	 *
+	 * @return callable(): array<int, string>
+	 */
+	private function attachment_enumerator(): callable {
+		return static function (): array {
+			global $wpdb;
+			if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) {
+				return array();
+			}
+			// SELECT meta_value alone is sufficient — _wp_attached_file
+			// is one-per-attachment and the value IS the relative path.
+			// Strings are escaped at insert; meta_key is a literal,
+			// not user-supplied; no $wpdb->prepare needed here.
+			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+			$rows = $wpdb->get_col( "SELECT meta_value FROM {$wpdb->postmeta} WHERE meta_key = '_wp_attached_file'" );
+			if ( ! is_array( $rows ) ) {
+				return array();
+			}
+			$out = array();
+			foreach ( $rows as $row ) {
+				$row = (string) $row;
+				if ( '' !== $row ) {
+					$out[] = $row;
+				}
+			}
+			return $out;
 		};
 	}
 
