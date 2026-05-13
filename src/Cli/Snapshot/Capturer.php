@@ -266,6 +266,7 @@ final class Capturer {
 				'post_types_owned'            => $scope->post_types_owned,
 				'option_keys'                 => $scope->option_keys,
 				'option_keys_attachment_refs' => $scope->option_keys_attachment_refs,
+				'option_keys_page_refs'       => $scope->option_keys_page_refs,
 				'theme_mods_for'              => $scope->theme_mods_for,
 			),
 			'contents' => array(

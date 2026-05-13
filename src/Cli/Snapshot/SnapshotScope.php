@@ -37,6 +37,13 @@
  *     and their underlying binary files; the apply path upserts the
  *     attachment posts and remaps option values to local IDs.
  *
+ *   - `option_keys_page_refs` — subset of `option_keys` whose values
+ *     are **page IDs** (e.g. `page_on_front`, `page_for_posts`).
+ *     The capturer additionally records each page's `slug` and
+ *     `post_type` so the apply path can resolve the local page by
+ *     slug (page IDs are not portable across environments — only
+ *     slugs are stable).
+ *
  *   - `theme_mods_for` — stylesheet slugs whose `theme_mods_<slug>`
  *     option should be captured.
  *
@@ -54,6 +61,7 @@ final class SnapshotScope {
 	 * @param array<int, string> $post_types_owned     Post types captured into templates.json with UPSERT semantics. Reserved for adapter-owned design state.
 	 * @param array<int, string> $option_keys          Explicit list of `wp_options.option_name` values to capture.
 	 * @param array<int, string> $option_keys_attachment_refs  Subset of `option_keys` whose values are attachment IDs. Capture also ships those attachments' posts + binaries; apply remaps the IDs.
+	 * @param array<int, string> $option_keys_page_refs        Subset of `option_keys` whose values are page IDs (e.g. `page_on_front`). Capture records each page's slug + post_type alongside the option value; apply resolves by slug on the target.
 	 * @param array<int, string> $theme_mods_for       Stylesheet slugs whose `theme_mods_<slug>` option should be captured.
 	 */
 	public function __construct(
@@ -61,6 +69,7 @@ final class SnapshotScope {
 		public readonly array $post_types_owned = array(),
 		public readonly array $option_keys = array(),
 		public readonly array $option_keys_attachment_refs = array(),
+		public readonly array $option_keys_page_refs = array(),
 		public readonly array $theme_mods_for = array(),
 	) {}
 
@@ -74,6 +83,7 @@ final class SnapshotScope {
 			post_types_owned:             array_values( array_unique( array_merge( $this->post_types_owned, $other->post_types_owned ) ) ),
 			option_keys:                  array_values( array_unique( array_merge( $this->option_keys, $other->option_keys ) ) ),
 			option_keys_attachment_refs:  array_values( array_unique( array_merge( $this->option_keys_attachment_refs, $other->option_keys_attachment_refs ) ) ),
+			option_keys_page_refs:        array_values( array_unique( array_merge( $this->option_keys_page_refs, $other->option_keys_page_refs ) ) ),
 			theme_mods_for:               array_values( array_unique( array_merge( $this->theme_mods_for, $other->theme_mods_for ) ) ),
 		);
 	}

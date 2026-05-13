@@ -120,6 +120,26 @@ final class Command {
 
 		$post_loader   = static fn ( int $id ): ?object => get_post( $id );
 		$blocks_parser = static fn ( string $content ): array => function_exists( 'parse_blocks' ) ? parse_blocks( $content ) : array();
+		$page_resolver = static function ( int $post_id ): ?array {
+			// Resolve a post ID to its slug + post_type for the page-ref
+			// snapshot path. Returns null when the post doesn't exist or
+			// isn't published — capture skips the ref so apply leaves
+			// the target's value alone rather than stamping a slug that
+			// won't resolve anywhere.
+			$post = get_post( $post_id );
+			if ( ! is_object( $post ) ) {
+				return null;
+			}
+			$slug = isset( $post->post_name ) ? (string) $post->post_name : '';
+			$type = isset( $post->post_type ) ? (string) $post->post_type : '';
+			if ( '' === $slug || '' === $type ) {
+				return null;
+			}
+			return array(
+				'slug' => $slug,
+				'type' => $type,
+			);
+		};
 
 		$capturer = new Capturer(
 			$output_dir,
@@ -132,7 +152,7 @@ final class Command {
 			$this->adapters(),
 			new \FrankenPress\Cli\Snapshot\WxrCapturer( $wp_runner, $sql_runner ),
 			new \FrankenPress\Cli\Snapshot\OwnedPostsCapturer( $sql_runner, $meta_reader, $term_reader, $active_stylesheet ),
-			new \FrankenPress\Cli\Snapshot\OptionsCapturer( $option_get ),
+			new \FrankenPress\Cli\Snapshot\OptionsCapturer( $option_get, $page_resolver ),
 			new \FrankenPress\Cli\Snapshot\AttachmentRefCapturer( $option_get, $post_loader, $meta_reader, $blocks_parser, $this->uploads_dir() ),
 		);
 
@@ -356,6 +376,23 @@ final class Command {
 					update_post_meta( $id, (string) $k, $v );
 				}
 				return $id;
+			},
+			// page_finder: resolve a captured page reference (slug +
+			// post_type) to a local post ID, or null when not present.
+			// Used by apply_options to translate option_page_refs
+			// entries (page_on_front, page_for_posts) into the target's
+			// local page IDs. Uses get_page_by_path() — the canonical
+			// slug → post lookup that handles hierarchical paths if a
+			// future page_ref ever needs them.
+			static function ( string $slug, string $post_type ): ?int {
+				if ( ! function_exists( 'get_page_by_path' ) ) {
+					return null;
+				}
+				$post = get_page_by_path( $slug, OBJECT, $post_type );
+				if ( ! is_object( $post ) || ! isset( $post->ID ) ) {
+					return null;
+				}
+				return (int) $post->ID;
 			},
 			// uploads_basedir: the canonical wp_upload_dir basedir.
 			// When S3UploadsBootstrap is active this is an `s3://` stream
