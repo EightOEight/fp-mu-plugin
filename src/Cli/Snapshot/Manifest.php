@@ -2,7 +2,7 @@
 /**
  * Snapshot manifest builder for `wp fp snapshot`.
  *
- * Builds the `fp.snapshot/v4` manifest as a nested array and emits it
+ * Builds the `fp.snapshot/v5` manifest as a nested array and emits it
  * as a stable, deterministic YAML document. "Deterministic" matters:
  * future phases cosign-sign the manifest content hash, so any
  * non-determinism (different key order, trailing whitespace, etc.)
@@ -10,8 +10,14 @@
  * emitter here is intentionally minimal — no anchor/alias support, no
  * tag URIs, no folded scalars.
  *
+ * v5 adds taxonomy capture for `wp_template` / `wp_template_part` /
+ * `wp_global_styles` (the `wp_theme` term, and `wp_template_part_area`
+ * for parts). Pre-v5 snapshots silently shipped renderer-invisible
+ * rows on apply — see `.aidocs/snapshot-design-promotion-hardening.md`
+ * for the gap analysis.
+ *
  * Schema reference: workspace `.aidocs/fse-only-pivot.md` §"fp.snapshot/v3
- * shape".
+ * shape" + `.aidocs/snapshot-design-promotion-hardening.md` Phase 1.
  *
  * @package FrankenPress\Cli\Snapshot
  */
@@ -22,7 +28,7 @@ namespace FrankenPress\Cli\Snapshot;
 
 final class Manifest {
 
-	public const SCHEMA = 'fp.snapshot/v4';
+	public const SCHEMA = 'fp.snapshot/v5';
 
 	/**
 	 * @param array<string, mixed> $data Top-level manifest keys, already populated

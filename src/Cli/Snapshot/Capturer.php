@@ -1,10 +1,10 @@
 <?php
 /**
- * Snapshot capturer — orchestrates `wp fp snapshot` in fp.snapshot/v4.
+ * Snapshot capturer — orchestrates `wp fp snapshot` in fp.snapshot/v5.
  *
  * Produces a snapshot directory containing:
  *
- *   manifest.yaml         — fp.snapshot/v4 manifest (canonical form)
+ *   manifest.yaml         — fp.snapshot/v5 manifest (canonical form)
  *   manifest.json         — JSON sidecar for the apply path
  *   content.xml.gz        — WXR for `post_types_additive` (typically empty
  *                           post v0.12.0 — page/post/attachment are out of

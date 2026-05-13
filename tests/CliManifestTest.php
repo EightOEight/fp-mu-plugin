@@ -17,13 +17,13 @@ final class CliManifestTest extends TestCase {
 	public function test_emits_flat_scalars(): void {
 		$out = ( new Manifest(
 			array(
-				'schema'  => 'fp.snapshot/v4',
+				'schema'  => 'fp.snapshot/v5',
 				'id'      => '01HXR2-architect-2',
 				'created' => '2026-05-11T09:14:22Z',
 			)
 		) )->to_yaml();
 
-		$expected = "schema: fp.snapshot/v4\nid: 01HXR2-architect-2\ncreated: \"2026-05-11T09:14:22Z\"\n";
+		$expected = "schema: fp.snapshot/v5\nid: 01HXR2-architect-2\ncreated: \"2026-05-11T09:14:22Z\"\n";
 
 		$this->assertSame( $expected, $out );
 	}
@@ -101,7 +101,7 @@ final class CliManifestTest extends TestCase {
 
 	public function test_deterministic_for_identical_input(): void {
 		$data = array(
-			'schema'  => 'fp.snapshot/v4',
+			'schema'  => 'fp.snapshot/v5',
 			'id'      => '01HXR2',
 			'source'  => array(
 				'site' => 'sts',
@@ -133,7 +133,7 @@ final class CliManifestTest extends TestCase {
 
 	public function test_to_array_round_trips(): void {
 		$data = array(
-			'schema' => 'fp.snapshot/v4',
+			'schema' => 'fp.snapshot/v5',
 			'id'     => 'foo',
 		);
 		$this->assertSame( $data, ( new Manifest( $data ) )->to_array() );

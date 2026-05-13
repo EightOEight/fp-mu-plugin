@@ -21,22 +21,36 @@
  *         "post_status":  "publish",
  *         "post_excerpt": "",
  *         "meta": {
- *           "theme":  "twentytwentyfive",
  *           "origin": "user"
+ *         },
+ *         "terms": {
+ *           "wp_theme": ["twentytwentyfive"]
  *         }
  *       },
  *       ...
  *     },
- *     "wp_template_part": { ... },
- *     "wp_global_styles": { ... },
- *     "wp_navigation":    { ... }
+ *     "wp_template_part": {
+ *       "header": {
+ *         "post_title":   "Header",
+ *         ...
+ *         "terms": {
+ *           "wp_theme":              ["twentytwentyfive"],
+ *           "wp_template_part_area": ["header"]
+ *         }
+ *       }
+ *     }
  *   }
  *
- * Keyed by `post_name` (slug). Where multiple posts share a slug for
- * the same post_type (rare for FSE CPTs — typically only happens
- * across active themes), `post_status` ordering picks the most-
- * recently-published. Theme-postmeta filtering at capture time
- * ensures we only capture rows belonging to the source theme.
+ * Keyed by `post_name` (slug).
+ *
+ * v5 taxonomy capture (2026-05): WP doesn't bind block-template posts
+ * to a theme via postmeta — it uses the `wp_theme` taxonomy term, and
+ * `wp_template_part_area` for the area facet. Capturing these is
+ * load-bearing: a `wp_template_part` row without the active theme's
+ * `wp_theme` term is invisible to `get_block_templates()` and the FSE
+ * renderer falls back to the theme file. The pre-v5 capture path
+ * silently shipped rows with no taxonomy info, producing the
+ * "header doesn't update after apply" failure on sts-stg 2026-05-13.
  *
  * @package FrankenPress\Cli\Snapshot
  */
@@ -45,14 +59,43 @@ declare(strict_types=1);
 
 namespace FrankenPress\Cli\Snapshot;
 
+use RuntimeException;
+
 final class OwnedPostsCapturer {
 
 	private const META_KEYS = array(
-		'wp_template'      => array( 'theme', 'origin', 'description', 'is_wp_suggestion' ),
-		'wp_template_part' => array( 'theme', 'origin', 'description', 'area' ),
+		'wp_template'      => array( 'origin', 'description', 'is_wp_suggestion' ),
+		'wp_template_part' => array( 'origin', 'description', 'area' ),
 		'wp_global_styles' => array(),
 		'wp_navigation'    => array(),
 	);
+
+	/**
+	 * Taxonomies WP attaches to each owned post type. Capture is
+	 * authoritative: apply replaces (not appends) terms on these
+	 * taxonomies so a re-apply corrects any drift.
+	 *
+	 * `wp_theme` is required for `wp_template`, `wp_template_part`,
+	 * and `wp_global_styles` — without it the FSE renderer can't
+	 * find the row. `wp_template_part_area` is required for
+	 * `wp_template_part` (header/footer/uncategorized).
+	 *
+	 * `wp_navigation` is not theme-bound, hence no taxonomies.
+	 */
+	private const TAXONOMIES = array(
+		'wp_template'      => array( 'wp_theme' ),
+		'wp_template_part' => array( 'wp_theme', 'wp_template_part_area' ),
+		'wp_global_styles' => array( 'wp_theme' ),
+		'wp_navigation'    => array(),
+	);
+
+	/**
+	 * Post types for which a missing `wp_theme` term is a fatal capture
+	 * error. Shipping such a row produces a silent renderer-invisible
+	 * apply, so we'd rather fail loud at capture time and force the
+	 * designer to look at their local state.
+	 */
+	private const REQUIRES_THEME_TERM = array( 'wp_template', 'wp_template_part', 'wp_global_styles' );
 
 	/**
 	 * @param callable $sql_runner Function (string $sql): array<int, array<string, mixed>>
@@ -61,14 +104,19 @@ final class OwnedPostsCapturer {
 	 *     `$wpdb->get_results($sql, ARRAY_A)`.
 	 * @param callable $meta_reader Function (int $post_id, string $key): mixed
 	 *     — wraps `get_post_meta($id, $key, true)` for testability.
+	 * @param callable $term_reader Function (int $post_id, string $taxonomy): array<int, string>
+	 *     — returns an array of term slugs for the given post + taxonomy
+	 *     (empty when the post has no terms on that taxonomy). Production
+	 *     caller injects a closure over `wp_get_object_terms($id, $tax, ['fields' => 'slugs'])`.
 	 * @param string   $source_stylesheet The active stylesheet at
-	 *     capture time. Used to filter wp_template / wp_template_part
-	 *     rows belonging to other themes (their `theme` postmeta
-	 *     wouldn't match the source).
+	 *     capture time. Used to filter wp_template / wp_template_part /
+	 *     wp_global_styles rows belonging to other themes (their
+	 *     `wp_theme` term wouldn't match the source).
 	 */
 	public function __construct(
 		private $sql_runner,
 		private $meta_reader,
+		private $term_reader,
 		private string $source_stylesheet,
 	) {}
 
@@ -77,6 +125,11 @@ final class OwnedPostsCapturer {
 	 * for json_encode-ing into the templates.json sidecar.
 	 *
 	 * @return array<string, array<string, array<string, mixed>>>
+	 * @throws RuntimeException When a captured row of a theme-bound
+	 *     post type (wp_template, wp_template_part, wp_global_styles)
+	 *     has no `wp_theme` term. Better to fail capture loud than
+	 *     ship a renderer-invisible row that silently breaks the
+	 *     target site.
 	 */
 	public function capture( SnapshotScope $scope ): array {
 		$out = array();
@@ -96,19 +149,35 @@ final class OwnedPostsCapturer {
 					continue;
 				}
 
-				$id   = (int) ( $row['ID'] ?? 0 );
-				$meta = $this->collect_meta( $id, $post_type );
+				$id    = (int) ( $row['ID'] ?? 0 );
+				$meta  = $this->collect_meta( $id, $post_type );
+				$terms = $this->collect_terms( $id, $post_type );
 
-				// Filter wp_template / wp_template_part rows whose `theme`
-				// postmeta doesn't match the source stylesheet. WP can
-				// hold multiple rows of the same slug across themes; we
-				// only want this theme's set.
+				// Filter rows whose `wp_theme` term doesn't match the
+				// source stylesheet. WP can hold rows for the same slug
+				// across multiple themes (each tied to a different
+				// `wp_theme` term); we only want this theme's set.
 				if ( '' !== $this->source_stylesheet
-					&& in_array( $post_type, array( 'wp_template', 'wp_template_part' ), true )
-					&& isset( $meta['theme'] )
-					&& (string) $meta['theme'] !== $this->source_stylesheet
+					&& isset( $terms['wp_theme'] )
+					&& ! in_array( $this->source_stylesheet, $terms['wp_theme'], true )
 				) {
 					continue;
+				}
+
+				// Theme-bound post types must have a `wp_theme` term. If
+				// not, the source row would be invisible to the renderer
+				// on the target — fail loud.
+				if ( in_array( $post_type, self::REQUIRES_THEME_TERM, true )
+					&& empty( $terms['wp_theme'] )
+				) {
+					throw new RuntimeException(
+						sprintf(
+							'snapshot: %s row "%s" (ID %d) has no `wp_theme` taxonomy term — capture refuses to ship a renderer-invisible row. Investigate the source DB state.',
+							$post_type,
+							$slug,
+							$id
+						)
+					);
 				}
 
 				$entry = array(
@@ -119,6 +188,9 @@ final class OwnedPostsCapturer {
 				);
 				if ( ! empty( $meta ) ) {
 					$entry['meta'] = $meta;
+				}
+				if ( ! empty( $terms ) ) {
+					$entry['terms'] = $terms;
 				}
 				$by_slug[ $slug ] = $entry;
 			}
@@ -144,6 +216,37 @@ final class OwnedPostsCapturer {
 				continue;
 			}
 			$out[ $key ] = $val;
+		}
+		return $out;
+	}
+
+	/**
+	 * Collect taxonomy terms for a captured row. Returns a map of
+	 * `taxonomy => [term_slugs]`. Empty taxonomies are omitted so the
+	 * resulting JSON stays tight.
+	 *
+	 * @return array<string, array<int, string>>
+	 */
+	private function collect_terms( int $post_id, string $post_type ): array {
+		$taxonomies = self::TAXONOMIES[ $post_type ] ?? array();
+		$out        = array();
+		foreach ( $taxonomies as $taxonomy ) {
+			$slugs = ( $this->term_reader )( $post_id, $taxonomy );
+			if ( ! is_array( $slugs ) || empty( $slugs ) ) {
+				continue;
+			}
+			// Normalise to plain string list. Defensive: caller's
+			// closure SHOULD return slugs already, but a malformed
+			// upstream could send WP_Term objects.
+			$clean = array();
+			foreach ( $slugs as $slug ) {
+				if ( is_string( $slug ) && '' !== $slug ) {
+					$clean[] = $slug;
+				}
+			}
+			if ( ! empty( $clean ) ) {
+				$out[ $taxonomy ] = $clean;
+			}
 		}
 		return $out;
 	}
