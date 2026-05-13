@@ -31,6 +31,50 @@ final class CliDriftLinterTest extends TestCase {
 		$this->assertTrue( true );
 	}
 
+	public function test_no_op_when_active_theme_is_site_tracked_only(): void {
+		// Phase 3 motivating case: child theme committed at
+		// web/app/themes/sts-design/, not composer-installed.
+		// Should NOT trip the drift linter.
+		$linter = $this->linter(
+			array(
+				'plugins' => array(),
+				'themes'  => array( 'twentytwentyfive' ), // composer-installed parent
+			),
+			array(
+				'plugins' => array(),
+				'theme'   => 'sts-design', // active child — site-tracked, NOT composer
+			),
+			array(
+				'plugins' => array(),
+				'themes'  => array( 'twentytwentyfive', 'sts-design' ),
+			)
+		);
+		$linter->check();
+		$this->assertTrue( true );
+	}
+
+	public function test_no_op_when_active_plugin_is_site_tracked_only(): void {
+		// A custom plugin committed into web/app/plugins/<slug>/ in
+		// the site repo, not composer-installed. Acceptable —
+		// the Dockerfile COPYs web/app/ so the plugin is in the image.
+		$linter = $this->linter(
+			array(
+				'plugins' => array( 'wordpress-importer' ),
+				'themes'  => array( 'twentytwentyfive' ),
+			),
+			array(
+				'plugins' => array( 'wordpress-importer', 'sts-custom-blocks' ),
+				'theme'   => 'twentytwentyfive',
+			),
+			array(
+				'plugins' => array( 'sts-custom-blocks' ),
+				'themes'  => array(),
+			)
+		);
+		$linter->check();
+		$this->assertTrue( true );
+	}
+
 	public function test_throws_when_active_plugin_not_composer_installed(): void {
 		$linter = $this->linter(
 			array(
@@ -122,7 +166,8 @@ final class CliDriftLinterTest extends TestCase {
 
 	public function test_error_message_includes_actionable_remediation(): void {
 		// The thrown message should tell the designer what to do —
-		// either composer require OR deactivate — for each drifted item.
+		// either composer require, commit to site repo, OR deactivate —
+		// for each drifted item.
 		$linter = $this->linter(
 			array(
 				'plugins' => array(),
@@ -138,6 +183,7 @@ final class CliDriftLinterTest extends TestCase {
 			$this->fail( 'expected RuntimeException' );
 		} catch ( RuntimeException $e ) {
 			$this->assertStringContainsString( 'composer require', $e->getMessage() );
+			$this->assertStringContainsString( 'site repo', $e->getMessage() );
 			$this->assertStringContainsString( 'wp plugin deactivate', $e->getMessage() );
 		}
 	}
@@ -145,11 +191,16 @@ final class CliDriftLinterTest extends TestCase {
 	/**
 	 * @param array{plugins: array<int, string>, themes: array<int, string>} $composer
 	 * @param array{plugins: array<int, string>, theme: string}              $active
+	 * @param array{plugins: array<int, string>, themes: array<int, string>} $site_tracked
 	 */
-	private function linter( array $composer, array $active ): DriftLinter {
+	private function linter( array $composer, array $active, array $site_tracked = array(
+		'plugins' => array(),
+		'themes'  => array(),
+	) ): DriftLinter {
 		return new DriftLinter(
 			static fn (): array => $composer,
 			static fn (): array => $active,
+			static fn (): array => $site_tracked,
 		);
 	}
 }
