@@ -180,7 +180,7 @@ final class Capturer {
 			$binaries_summary,
 			$uploads_manifest,
 			$adapter_state,
-			$this->collect_owned_slugs( $owned_payload )
+			$this->collect_owned_slugs( $owned_payload, $scope )
 		);
 		$manifest_path = $this->output_dir . '/manifest.yaml';
 		file_put_contents( $manifest_path, $manifest->to_yaml() );
@@ -318,21 +318,38 @@ final class Capturer {
 
 	/**
 	 * Build a manifest-side `templates_slugs` map of
-	 * `post_type => [slug, ...]` from the captured owned payload.
+	 * `post_type => [slug, ...]` for every post type in the active
+	 * adapter's `post_types_owned` scope.
 	 *
-	 * The apply path's reaper uses this to identify orphan rows on
-	 * the target (slugs that exist locally but aren't in the
-	 * captured set) and trash them so deleted-by-designer rows
-	 * eventually disappear from prod.
+	 * Iterates `$scope->post_types_owned` (NOT `$owned_payload`) so
+	 * post types the adapter owns BUT didn't capture any rows for
+	 * still emit an entry — as an empty array.
+	 *
+	 * Reaper semantics:
+	 *   ABSENT key → adapter doesn't own this type at all (skip).
+	 *   EMPTY array → adapter owns this type, no rows captured
+	 *                 (reap every existing row of this type).
+	 *
+	 * The "empty = reap all" branch is load-bearing for the Phase 3
+	 * theme-files-as-canonical-channel pivot: when a designer saves
+	 * design state to theme files (via Create Block Theme), the
+	 * `wp_template` / `wp_template_part` / `wp_global_styles` DB
+	 * rows go to zero on the source. Without the empty signal, the
+	 * reaper would skip those types entirely and the target would
+	 * carry orphan DB rows from prior applies forever.
 	 *
 	 * @param array<string, array<string, array<string, mixed>>> $owned_payload
 	 * @return array<string, array<int, string>>
 	 */
-	private function collect_owned_slugs( array $owned_payload ): array {
+	private function collect_owned_slugs( array $owned_payload, SnapshotScope $scope ): array {
 		$out = array();
-		foreach ( $owned_payload as $post_type => $by_slug ) {
+		foreach ( $scope->post_types_owned as $post_type ) {
 			$post_type = (string) $post_type;
-			$slugs     = array();
+			if ( '' === $post_type ) {
+				continue;
+			}
+			$by_slug = is_array( $owned_payload[ $post_type ] ?? null ) ? (array) $owned_payload[ $post_type ] : array();
+			$slugs   = array();
 			foreach ( array_keys( $by_slug ) as $slug ) {
 				$slug = (string) $slug;
 				if ( '' !== $slug ) {
