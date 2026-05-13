@@ -103,6 +103,15 @@ final class CliAdapterFseTest extends TestCase {
 		}
 	}
 
+	public function test_scope_includes_custom_css_post_type(): void {
+		// Site Editor / Customizer "Additional CSS" lives in a
+		// custom_css post (post_name = stylesheet slug). Captured so
+		// designer CSS edits travel through the snapshot.
+		Functions\when( 'get_stylesheet' )->justReturn( 'twentytwentyfive' );
+		$scope = ( new Fse() )->scope();
+		$this->assertContains( 'custom_css', $scope->post_types_owned );
+	}
+
 	public function test_scope_split_has_no_overlap(): void {
 		// A post_type must be in exactly one bucket; can't be both
 		// additive and owned.

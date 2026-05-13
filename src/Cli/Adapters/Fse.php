@@ -77,6 +77,13 @@ final class Fse implements AdapterInterface {
 				'wp_template_part',
 				'wp_global_styles',
 				'wp_navigation',
+				// `custom_css` carries the Site Editor / Customizer
+				// "Additional CSS" payload for the active theme. WP
+				// stores it as a `custom_css` post with `post_name` ==
+				// active stylesheet (e.g. "twentytwentyfive"); the
+				// captured row upserts cleanly by name+post_type on
+				// the target.
+				'custom_css',
 			),
 			option_keys:                  array(
 				'blogname',
