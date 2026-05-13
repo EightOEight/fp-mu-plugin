@@ -91,6 +91,7 @@ final class OwnedPostsCapturer {
 		'wp_global_styles' => array( 'wp_theme' ),
 		'wp_navigation'    => array(),
 		'custom_css'       => array(),
+		'wp_block'         => array(),
 	);
 
 	/**
@@ -101,6 +102,14 @@ final class OwnedPostsCapturer {
 	 * the source DB carries rows from a previous theme.
 	 */
 	private const THEME_BOUND_VIA_POST_NAME = array( 'custom_css' );
+
+	/**
+	 * Post types whose entries include a `captured_id` field so the
+	 * apply path can build a captured-id → local-id remap and rewrite
+	 * inter-post block refs in other owned-post content (e.g.
+	 * `wp:block {"ref":N}` where N is the local wp_block post ID).
+	 */
+	private const INCLUDES_CAPTURED_ID = array( 'wp_block' );
 
 	/**
 	 * Post types for which a missing `wp_theme` term is a fatal capture
@@ -210,6 +219,9 @@ final class OwnedPostsCapturer {
 					'post_status'  => (string) ( $row['post_status'] ?? 'publish' ),
 					'post_excerpt' => (string) ( $row['post_excerpt'] ?? '' ),
 				);
+				if ( in_array( $post_type, self::INCLUDES_CAPTURED_ID, true ) && $id > 0 ) {
+					$entry['captured_id'] = $id;
+				}
 				if ( ! empty( $meta ) ) {
 					$entry['meta'] = $meta;
 				}
