@@ -158,6 +158,7 @@ final class Command {
 			new \FrankenPress\Cli\Snapshot\DriftLinter(
 				$this->composer_packages_reader(),
 				$this->active_state_reader(),
+				$this->site_tracked_reader(),
 			),
 			$this->attachment_enumerator(),
 		);
@@ -648,6 +649,55 @@ final class Command {
 				'plugins' => $plugins,
 				'theme'   => $theme,
 			);
+		};
+	}
+
+	/**
+	 * Build the closure that DriftLinter uses to enumerate the set
+	 * of plugin + theme slugs site-tracked under WP_CONTENT_DIR/
+	 * (regardless of composer provenance).
+	 *
+	 * Catches site-tracked entries that ride into the production
+	 * image via the Dockerfile's `web/app/` COPY — e.g. a Phase 3
+	 * child theme committed at `web/app/themes/<site>-design/`.
+	 *
+	 * Production WP_CONTENT_DIR resolves to `<bedrock-root>/web/app`;
+	 * `<dir>/plugins/<slug>/` and `<dir>/themes/<slug>/` are the
+	 * canonical paths.
+	 *
+	 * @return callable(): array{plugins: array<int, string>, themes: array<int, string>}
+	 */
+	private function site_tracked_reader(): callable {
+		$content_dir = defined( 'WP_CONTENT_DIR' ) ? rtrim( (string) constant( 'WP_CONTENT_DIR' ), '/' ) : '';
+		return static function () use ( $content_dir ): array {
+			$out = array(
+				'plugins' => array(),
+				'themes'  => array(),
+			);
+			if ( '' === $content_dir ) {
+				return $out;
+			}
+			foreach ( array( 'plugins', 'themes' ) as $kind ) {
+				$dir = $content_dir . '/' . $kind;
+				if ( ! is_dir( $dir ) ) {
+					continue;
+				}
+				$entries = scandir( $dir );
+				if ( false === $entries ) {
+					continue;
+				}
+				foreach ( $entries as $entry ) {
+					if ( '.' === $entry || '..' === $entry ) {
+						continue;
+					}
+					$path = $dir . '/' . $entry;
+					if ( ! is_dir( $path ) ) {
+						continue;
+					}
+					$out[ $kind ][] = $entry;
+				}
+			}
+			return $out;
 		};
 	}
 
