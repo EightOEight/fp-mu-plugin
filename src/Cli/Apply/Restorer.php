@@ -514,29 +514,81 @@ final class Restorer {
 	}
 
 	/**
-	 * Rewrite `"id":<captured>` JSON block-attrs and
-	 * `wp-image-<captured>` CSS-class references in $content to the
-	 * local attachment IDs from $remap.
+	 * Block-attribute names that carry a single attachment ID as their
+	 * value. `wp:image` / `wp:cover` / `wp:video` / `wp:audio` / `wp:file`
+	 * use `id`; `wp:media-text` uses `mediaId`. Add new attr names here
+	 * as new core blocks (or plugin-shipped blocks) gain attachment refs.
+	 */
+	private const ATTACHMENT_ID_ATTRS_SCALAR = array( 'id', 'mediaId' );
+
+	/**
+	 * Block-attribute names that carry an ARRAY of attachment IDs. The
+	 * legacy `wp:gallery` block uses `ids`; modern `wp:gallery` uses
+	 * inner `wp:image` blocks (covered by the scalar `id` rewrite).
+	 */
+	private const ATTACHMENT_ID_ATTRS_ARRAY = array( 'ids' );
+
+	/**
+	 * Rewrite JSON block-attribute references to captured attachment IDs
+	 * so they point at the local attachment post IDs in $remap.
 	 *
-	 * Only rewrites integers that are KEYS in $remap — other numeric
-	 * "id" values (e.g. block ID references that aren't attachments)
-	 * stay untouched.
+	 * Covered surfaces:
+	 *   - Scalar attrs: `"id":42`, `"mediaId":42` (configurable list).
+	 *   - Array attrs:  `"ids":[1,2,3]`            (configurable list).
+	 *   - CSS class:    `wp-image-42`              (rendered img markup).
 	 *
-	 * @param array<int, int> $remap
+	 * Only rewrites integers that are KEYS in $remap. Other numeric
+	 * values (e.g. wp:navigation-link block-attr `"id"` pointing at a
+	 * page) stay untouched because their IDs are never in the
+	 * attachment-id remap. That property is what lets us safely run a
+	 * generic "any int after `"id"`" regex without false rewrites.
+	 *
+	 * Implementation: regex per attr name. Faster than a parse_blocks /
+	 * serialize_blocks round-trip and matches the existing style here.
+	 * If a future block surfaces a new attachment-ID attr shape that
+	 * can't be expressed as a simple "<attr>":<value> regex (e.g.
+	 * nested under another attr), consider switching to a parse_blocks
+	 * walk that mutates attrs structurally.
+	 *
+	 * @param array<int, int> $remap captured_id => local_id
 	 */
 	private function rewrite_attachment_ids_in_content( string $content, array $remap ): string {
-		// `"id":42` (block attr JSON). The capturing group covers the
-		// integer; the callback decides whether to remap.
-		$content = (string) preg_replace_callback(
-			'/("id"\s*:\s*)(\d+)/',
-			static function ( array $m ) use ( $remap ): string {
-				$captured = (int) $m[2];
-				return isset( $remap[ $captured ] ) ? $m[1] . (string) $remap[ $captured ] : $m[0];
-			},
-			$content
-		);
-		// `class="... wp-image-42 ..."` (img tag CSS class). Same
-		// remap policy.
+		if ( empty( $remap ) ) {
+			return $content;
+		}
+
+		foreach ( self::ATTACHMENT_ID_ATTRS_SCALAR as $attr ) {
+			$pattern = '/("' . preg_quote( $attr, '/' ) . '"\s*:\s*)(\d+)/';
+			$content = (string) preg_replace_callback(
+				$pattern,
+				static function ( array $m ) use ( $remap ): string {
+					$captured = (int) $m[2];
+					return isset( $remap[ $captured ] ) ? $m[1] . (string) $remap[ $captured ] : $m[0];
+				},
+				$content
+			);
+		}
+
+		foreach ( self::ATTACHMENT_ID_ATTRS_ARRAY as $attr ) {
+			$pattern = '/("' . preg_quote( $attr, '/' ) . '"\s*:\s*\[)([^\]]*)(\])/';
+			$content = (string) preg_replace_callback(
+				$pattern,
+				static function ( array $m ) use ( $remap ): string {
+					$inner = (string) preg_replace_callback(
+						'/\d+/',
+						static function ( array $mm ) use ( $remap ): string {
+							$captured = (int) $mm[0];
+							return isset( $remap[ $captured ] ) ? (string) $remap[ $captured ] : $mm[0];
+						},
+						$m[2]
+					);
+					return $m[1] . $inner . $m[3];
+				},
+				$content
+			);
+		}
+
+		// `class="... wp-image-42 ..."` (img tag CSS class).
 		$content = (string) preg_replace_callback(
 			'/wp-image-(\d+)/',
 			static function ( array $m ) use ( $remap ): string {
