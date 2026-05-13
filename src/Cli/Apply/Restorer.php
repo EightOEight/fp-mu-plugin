@@ -557,6 +557,14 @@ final class Restorer {
 			return;
 		}
 
+		// captured_id → local_id for wp_block entries. Built up as we
+		// upsert wp_block rows (the alpha order of $payload keys puts
+		// wp_block before wp_global_styles / wp_navigation / wp_template* —
+		// see OwnedPostsCapturer's ksort). Used to rewrite
+		// `wp:block {"ref":N}` references in the content of subsequent
+		// owned-post types.
+		$wp_block_id_remap = array();
+
 		foreach ( $payload as $post_type => $by_slug ) {
 			if ( ! is_string( $post_type ) || ! is_array( $by_slug ) ) {
 				continue;
@@ -585,6 +593,16 @@ final class Restorer {
 					}
 				}
 
+				// `wp:block {"ref":N}` refs: remap to local wp_block IDs.
+				// wp_block entries themselves are NOT rewritten here (they
+				// don't typically self-reference; if a synced pattern ever
+				// contains a `wp:block` referencing another synced pattern,
+				// the inner ref would dangle on apply — accept as a
+				// follow-up if a real use case surfaces).
+				if ( 'wp_block' !== $post_type && '' !== $post_content && ! empty( $wp_block_id_remap ) ) {
+					$post_content = $this->rewrite_block_ref_ids_in_content( $post_content, $wp_block_id_remap );
+				}
+
 				$fields = array(
 					'post_title'   => (string) ( $entry['post_title'] ?? '' ),
 					'post_content' => $post_content,
@@ -597,11 +615,57 @@ final class Restorer {
 				$existing_id = ( $this->owned_finder )( $post_type, $slug, $terms );
 				if ( null !== $existing_id ) {
 					( $this->owned_updater )( (int) $existing_id, $fields, $meta, $terms );
+					$local_id = (int) $existing_id;
 				} else {
-					( $this->owned_inserter )( $post_type, $slug, $fields, $meta, $terms );
+					$local_id = (int) ( $this->owned_inserter )( $post_type, $slug, $fields, $meta, $terms );
+				}
+
+				// For wp_block entries, stash captured_id → local_id so
+				// subsequent owned-post entries get their `wp:block`
+				// refs rewritten.
+				if ( 'wp_block' === $post_type ) {
+					$captured_id = (int) ( $entry['captured_id'] ?? 0 );
+					if ( $captured_id > 0 && $local_id > 0 ) {
+						$wp_block_id_remap[ $captured_id ] = $local_id;
+					}
 				}
 			}
 		}
+	}
+
+	/**
+	 * Rewrite the `ref` attr inside every `wp:block` block-delimiter
+	 * line in $content, using the captured-id → local-id map built
+	 * from wp_block upserts.
+	 *
+	 * Scope: only the JSON attrs in `wp:block` block-comment delimiters
+	 * are touched. Other blocks (`wp:image`, `wp:navigation-link`,
+	 * etc.) have their own remap passes. Numeric values outside this
+	 * regex are unaffected.
+	 *
+	 * @param array<int, int> $wp_block_id_remap captured_id => local_id
+	 */
+	private function rewrite_block_ref_ids_in_content( string $content, array $wp_block_id_remap ): string {
+		if ( empty( $wp_block_id_remap ) ) {
+			return $content;
+		}
+		return (string) preg_replace_callback(
+			'/(<!-- wp:block\s+)(\{[^}]+\})(\s*\/?-->)/',
+			static function ( array $outer_m ) use ( $wp_block_id_remap ): string {
+				$rewritten = (string) preg_replace_callback(
+					'/("ref"\s*:\s*)(\d+)/',
+					static function ( array $m ) use ( $wp_block_id_remap ): string {
+						$captured = (int) $m[2];
+						return isset( $wp_block_id_remap[ $captured ] )
+							? $m[1] . (string) $wp_block_id_remap[ $captured ]
+							: $m[0];
+					},
+					$outer_m[2]
+				);
+				return $outer_m[1] . $rewritten . $outer_m[3];
+			},
+			$content
+		);
 	}
 
 	/**

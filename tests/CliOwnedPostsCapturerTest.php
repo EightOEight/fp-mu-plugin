@@ -350,6 +350,55 @@ final class CliOwnedPostsCapturerTest extends TestCase {
 		$this->assertArrayNotHasKey( 'twentytwentyfour', $out['custom_css'] );
 	}
 
+	public function test_capture_wp_block_includes_captured_id(): void {
+		// wp_block entries ship a captured_id so apply can build a
+		// captured→local remap for `wp:block {"ref":N}` rewriting.
+		$rows        = array(
+			array(
+				'ID'           => 88,
+				'post_name'    => 'hero-pattern',
+				'post_title'   => 'Hero Pattern',
+				'post_content' => '<!-- wp:group --><!-- /wp:group -->',
+				'post_status'  => 'publish',
+				'post_excerpt' => '',
+			),
+		);
+		$sql_runner  = static fn ( string $sql ): array => $rows;
+		$meta_reader = static fn ( int $id, string $key ): mixed => '';
+		$term_reader = static fn ( int $id, string $tax ): array => array();
+
+		$capturer = new OwnedPostsCapturer( $sql_runner, $meta_reader, $term_reader, 'twentytwentyfive' );
+		$out      = $capturer->capture( new SnapshotScope( post_types_owned: array( 'wp_block' ) ) );
+
+		$this->assertArrayHasKey( 'hero-pattern', $out['wp_block'] );
+		$this->assertSame( 88, $out['wp_block']['hero-pattern']['captured_id'] );
+	}
+
+	public function test_capture_does_not_emit_captured_id_for_wp_template(): void {
+		// captured_id is only emitted for INCLUDES_CAPTURED_ID types
+		// (currently wp_block). wp_template entries are upserted by
+		// slug + post_type — no remap needed.
+		$rows        = array(
+			array(
+				'ID'           => 99,
+				'post_name'    => 'home',
+				'post_title'   => 'Home',
+				'post_content' => '',
+				'post_status'  => 'publish',
+				'post_excerpt' => '',
+			),
+		);
+		$sql_runner  = static fn ( string $sql ): array => $rows;
+		$meta_reader = static fn ( int $id, string $key ): mixed => '';
+		$term_reader = static fn ( int $id, string $tax ): array =>
+			'wp_theme' === $tax ? array( 'twentytwentyfive' ) : array();
+
+		$capturer = new OwnedPostsCapturer( $sql_runner, $meta_reader, $term_reader, 'twentytwentyfive' );
+		$out      = $capturer->capture( new SnapshotScope( post_types_owned: array( 'wp_template' ) ) );
+
+		$this->assertArrayNotHasKey( 'captured_id', $out['wp_template']['home'] );
+	}
+
 	public function test_capture_skips_empty_post_types_in_output(): void {
 		// post_types_owned declares 3 types but only one returns rows;
 		// the other two should not appear in the output map (no empty

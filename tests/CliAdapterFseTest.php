@@ -112,6 +112,15 @@ final class CliAdapterFseTest extends TestCase {
 		$this->assertContains( 'custom_css', $scope->post_types_owned );
 	}
 
+	public function test_scope_includes_wp_block_post_type(): void {
+		// Synced patterns live in wp_block posts; other owned posts
+		// reference them via `wp:block {"ref":N}`. Captured so the
+		// pattern + its refs travel through the snapshot.
+		Functions\when( 'get_stylesheet' )->justReturn( 'twentytwentyfive' );
+		$scope = ( new Fse() )->scope();
+		$this->assertContains( 'wp_block', $scope->post_types_owned );
+	}
+
 	public function test_scope_split_has_no_overlap(): void {
 		// A post_type must be in exactly one bucket; can't be both
 		// additive and owned.

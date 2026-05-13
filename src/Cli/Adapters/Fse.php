@@ -84,6 +84,13 @@ final class Fse implements AdapterInterface {
 				// captured row upserts cleanly by name+post_type on
 				// the target.
 				'custom_css',
+				// `wp_block` holds synced patterns (reusable blocks).
+				// Other owned posts reference them via
+				// `<!-- wp:block {"ref":N} -->` where N is the local
+				// wp_block post ID; the Restorer rewrites those refs
+				// using a captured-id → local-id remap built while
+				// upserting wp_block entries.
+				'wp_block',
 			),
 			option_keys:                  array(
 				'blogname',
