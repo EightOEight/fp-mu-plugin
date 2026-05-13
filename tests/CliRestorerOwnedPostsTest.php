@@ -199,6 +199,7 @@ final class CliRestorerOwnedPostsTest extends TestCase {
 		$att_finder     = static fn ( string $rel ): ?int => null;
 		$att_updater    = static function ( int $id, array $fields, array $meta ): void {};
 		$att_inserter   = static fn ( array $fields, array $meta ): int => 0;
+		$page_finder    = static fn ( string $slug, string $type ): ?int => null;
 
 		return new Restorer(
 			$this->snapshot_dir,
@@ -214,6 +215,7 @@ final class CliRestorerOwnedPostsTest extends TestCase {
 			$att_finder,
 			$att_updater,
 			$att_inserter,
+			$page_finder,
 			'/tmp/uploads',
 			'http://target.example/app/uploads',
 		);

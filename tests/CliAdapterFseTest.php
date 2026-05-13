@@ -85,6 +85,24 @@ final class CliAdapterFseTest extends TestCase {
 		}
 	}
 
+	public function test_scope_declares_page_on_front_as_page_ref(): void {
+		// Homepage settings carry local page IDs; capture records the
+		// slug + post_type via option_keys_page_refs so apply can
+		// resolve to the target's local page ID.
+		Functions\when( 'get_stylesheet' )->justReturn( 'twentytwentyfive' );
+		$scope = ( new Fse() )->scope();
+		$this->assertContains( 'page_on_front', $scope->option_keys_page_refs );
+		$this->assertContains( 'page_for_posts', $scope->option_keys_page_refs );
+	}
+
+	public function test_page_ref_options_are_also_in_option_keys(): void {
+		Functions\when( 'get_stylesheet' )->justReturn( 'twentytwentyfive' );
+		$scope = ( new Fse() )->scope();
+		foreach ( $scope->option_keys_page_refs as $key ) {
+			$this->assertContains( $key, $scope->option_keys );
+		}
+	}
+
 	public function test_scope_split_has_no_overlap(): void {
 		// A post_type must be in exactly one bucket; can't be both
 		// additive and owned.

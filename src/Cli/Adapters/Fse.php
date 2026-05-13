@@ -99,6 +99,19 @@ final class Fse implements AdapterInterface {
 				'site_logo',
 				'custom_logo',
 			),
+			// Subset of option_keys whose values are PAGE IDs. Pages
+			// are editor-owned content, intentionally NOT in scope —
+			// but the design state can still reference them (the
+			// homepage settings, in particular). Capture records each
+			// referenced page's slug + post_type alongside the option
+			// value so the apply path can resolve to the local page by
+			// slug. If the slug isn't present on the target, apply
+			// emits a warning and skips the option write rather than
+			// stamping a dangling local ID.
+			option_keys_page_refs:        array(
+				'page_on_front',
+				'page_for_posts',
+			),
 			theme_mods_for:               $this->active_stylesheet_or_empty(),
 		);
 	}

@@ -68,6 +68,7 @@ final class Restorer {
 	 * @param callable                     $att_finder      fn(string $relative_file): ?int — looks up attachment post ID by `_wp_attached_file` value.
 	 * @param callable                     $att_updater     fn(int $post_id, array $fields, array $meta): void.
 	 * @param callable                     $att_inserter    fn(array $fields, array $meta): int — wraps `wp_insert_post` for attachments.
+	 * @param callable                     $page_finder     fn(string $slug, string $post_type): ?int — resolves a captured page reference to the local post ID, or null when not present on the target. Used by the option_page_refs apply path to rewrite page_on_front / page_for_posts.
 	 * @param string                       $uploads_basedir Absolute path to `wp_upload_dir()['basedir']`. May be an `s3://` stream wrapper when S3UploadsBootstrap is active.
 	 * @param string                       $uploads_baseurl Public URL prefix for uploads (`wp_upload_dir()['baseurl']`). On FrankenPress with S3UploadsBootstrap this is the S3 bucket URL (or the configured CDN). Used to rewrite captured `<source>/app/uploads` URLs in block markup so attachment renders point at S3 rather than the WP host (which doesn't proxy /app/uploads/ to S3).
 	 */
@@ -85,6 +86,7 @@ final class Restorer {
 		private $att_finder,
 		private $att_updater,
 		private $att_inserter,
+		private $page_finder,
 		private string $uploads_basedir,
 		private string $uploads_baseurl,
 	) {}
@@ -782,11 +784,23 @@ final class Restorer {
 	 * Apply the options.json sidecar — `update_option` for each entry,
 	 * `set_theme_mod` for each theme_mods entry.
 	 *
-	 * For options whose values are attachment IDs (per
-	 * `option_keys_attachment_refs` in the scope, rendered via the
-	 * apply_attachments stage's captured-ID → local-ID remap), the
-	 * captured ID is replaced with the local ID so the option points
-	 * at the right attachment post on this environment.
+	 * Two remap passes are layered on top of the raw values:
+	 *
+	 *   1. Attachment-ref remap: options listed in
+	 *      `attachments.json.option_ref_to_file` (site_logo etc.) have
+	 *      their captured attachment ID swapped for the local one via
+	 *      `$attachment_id_remap`. Without this, site_logo would point
+	 *      at the designer's stack's attachment ID, which is rarely
+	 *      the local ID.
+	 *
+	 *   2. Page-ref remap: options listed in
+	 *      `options.json.option_page_refs` (page_on_front etc.) are
+	 *      resolved by slug via the `page_finder` seam — `get_page_by_path()`
+	 *      in production. When the slug isn't found on the target, the
+	 *      option write is SKIPPED (not stamped with a dangling captured
+	 *      ID). A loud `error_log` warning surfaces the gap so a designer
+	 *      can either pick a slug that exists on prod or have an editor
+	 *      create the page first.
 	 *
 	 * @param array<int, int> $attachment_id_remap captured_id => local_id
 	 */
@@ -809,6 +823,7 @@ final class Restorer {
 		// is the canonical list, but here we just look up the captured
 		// option value: if it's an integer we have a mapping for, swap it.
 		$options            = (array) ( $payload['options'] ?? array() );
+		$option_page_refs   = is_array( $payload['option_page_refs'] ?? null ) ? (array) $payload['option_page_refs'] : array();
 		$remap_meta_path    = $this->snapshot_dir . '/attachments.json';
 		$option_ref_to_file = array();
 		if ( is_file( $remap_meta_path ) ) {
@@ -819,6 +834,31 @@ final class Restorer {
 
 		foreach ( $options as $key => $value ) {
 			$key = (string) $key;
+
+			if ( isset( $option_page_refs[ $key ] ) && is_array( $option_page_refs[ $key ] ) ) {
+				$slug = (string) ( $option_page_refs[ $key ]['slug'] ?? '' );
+				$type = (string) ( $option_page_refs[ $key ]['type'] ?? '' );
+				if ( '' === $slug || '' === $type ) {
+					// Malformed page ref — fall through to the literal value.
+				} else {
+					$local_id = ( $this->page_finder )( $slug, $type );
+					if ( null === $local_id ) {
+						error_log(
+							sprintf(
+								"fp apply: option '%s' page ref slug '%s' (post_type '%s') not found on target — skipping option write to avoid stamping a dangling ID. Create the page on the target (or pick a slug that exists) before re-applying.",
+								$key,
+								$slug,
+								$type
+							)
+						);
+						continue;
+					}
+					$value = (string) $local_id;
+					( $this->option_writer )( $key, $value, true );
+					continue;
+				}
+			}
+
 			if ( isset( $option_ref_to_file[ $key ] ) ) {
 				$captured = (int) $value;
 				if ( $captured > 0 && isset( $attachment_id_remap[ $captured ] ) ) {
