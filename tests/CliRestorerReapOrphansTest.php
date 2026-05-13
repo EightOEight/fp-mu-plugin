@@ -60,6 +60,33 @@ final class CliRestorerReapOrphansTest extends TestCase {
 		$this->assertSame( array(), $trashed );
 	}
 
+	public function test_trashes_all_rows_when_captured_set_is_empty(): void {
+		// Phase 3 critical path: designer saves design state to theme
+		// files via Create Block Theme; the wp_template_part DB rows
+		// go to zero on the source. The new snapshot's
+		// `templates_slugs[wp_template_part]` is an EMPTY array
+		// (present, but no captured entries). Reaper must trash all
+		// existing wp_template_part rows on the target so the orphans
+		// from prior Phase-2-shaped applies disappear.
+		$existing = array(
+			array(
+				10 => 'header',
+				11 => 'footer',
+				12 => 'footer-columns',
+			),
+		);
+		$manifest = $this->manifest(
+			array(
+				'wp_template_part' => array(), // present but empty — Phase 3 signal
+			),
+			'twentytwentyfive'
+		);
+
+		$trashed = $this->reap_and_collect( $existing, $manifest );
+
+		$this->assertSame( array( 10, 11, 12 ), $trashed );
+	}
+
 	public function test_skips_post_type_absent_from_captured_set(): void {
 		// Manifest captured wp_template_part slugs but NOT wp_template
 		// (e.g. the adapter didn't include wp_template at this snapshot).
