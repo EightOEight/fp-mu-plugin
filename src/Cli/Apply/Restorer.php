@@ -18,12 +18,25 @@
  *     WXR file, and the options sidecar only touches option_names
  *     declared in scope.
  *
- * Idempotency boundary:
+ * Idempotency boundary (v0.14.0+):
  *
- *   wp_options.fp_snapshot_applied_ref     === manifest.id
- *   wp_options.fp_snapshot_applied_sha256  === manifest.contents.wxr_sha256
+ *   wp_options.fp_snapshot_applied_ref                === manifest.id
+ *   wp_options.fp_snapshot_applied_composite_sha256   === sha256 of the
+ *                                                          four content
+ *                                                          shas concat'd
+ *                                                          (wxr +
+ *                                                           templates +
+ *                                                           options +
+ *                                                           attachments)
  *
  * Both match → skipped. Either differs → re-runs the full apply.
+ *
+ * Backward-compat: pre-v0.14.0 builds stamped only
+ * `fp_snapshot_applied_sha256` (the wxr-sha alone). Sites upgrading
+ * from an older fp don't re-apply once on first run — when the
+ * composite marker is absent, the comparison falls back to the wxr-
+ * sha alone. The next apply that actually changes the snapshot id
+ * stamps the composite marker and migrates the site forward.
  *
  * @package FrankenPress\Cli\Apply
  */
@@ -37,8 +50,9 @@ use RuntimeException;
 
 final class Restorer {
 
-	public const APPLIED_REF_OPTION    = 'fp_snapshot_applied_ref';
-	public const APPLIED_SHA256_OPTION = 'fp_snapshot_applied_sha256';
+	public const APPLIED_REF_OPTION              = 'fp_snapshot_applied_ref';
+	public const APPLIED_SHA256_OPTION           = 'fp_snapshot_applied_sha256';
+	public const APPLIED_COMPOSITE_SHA256_OPTION = 'fp_snapshot_applied_composite_sha256';
 
 	/**
 	 * @param string                       $snapshot_dir    Local directory with manifest.json + content.xml.gz + options.json + templates.json + attachments.json.
@@ -99,7 +113,9 @@ final class Restorer {
 			);
 		}
 
-		if ( $this->already_applied( $id, $expected_sha ) ) {
+		$composite_sha = $this->compute_composite_sha256( $manifest );
+
+		if ( $this->already_applied( $id, $expected_sha, $composite_sha ) ) {
 			return 'skipped';
 		}
 
@@ -164,9 +180,13 @@ final class Restorer {
 			(array) ( $manifest['adapter_state'] ?? array() )
 		);
 
-		// Stage 7: idempotency markers.
+		// Stage 7: idempotency markers. Three options written so this
+		// build is forward-compatible (future readers can rely on the
+		// composite hash) AND backward-compatible (older readers that
+		// only know about the wxr-sha marker keep working).
 		( $this->option_writer )( self::APPLIED_REF_OPTION, $id, true );
 		( $this->option_writer )( self::APPLIED_SHA256_OPTION, $expected_sha, true );
+		( $this->option_writer )( self::APPLIED_COMPOSITE_SHA256_OPTION, $composite_sha, true );
 
 		return 'applied';
 	}
@@ -190,10 +210,63 @@ final class Restorer {
 		return $decoded;
 	}
 
-	private function already_applied( string $id, string $sha256 ): bool {
-		$prior_ref = ( $this->option_reader )( self::APPLIED_REF_OPTION );
-		$prior_sha = ( $this->option_reader )( self::APPLIED_SHA256_OPTION );
-		return $id === $prior_ref && $sha256 === $prior_sha;
+	/**
+	 * Decide whether the snapshot at $id has already been applied.
+	 *
+	 * Compares the on-disk manifest's id + content hashes against the
+	 * markers stamped by a previous apply. The composite hash is the
+	 * authoritative comparison from v0.14.0 onward; the wxr_sha check
+	 * is the pre-composite fallback so sites that were applied by an
+	 * older fp build don't re-apply once when this build first runs.
+	 *
+	 * Why the composite hash matters: for FSE sites the WXR is empty
+	 * and its sha is constant across snapshots. A manifest with the
+	 * same id but tampered templates.json / options.json content would
+	 * skip falsely under the wxr-only check. The composite mixes every
+	 * content-sha from the manifest, so any change to any sidecar
+	 * forces a re-apply.
+	 */
+	private function already_applied( string $id, string $wxr_sha, string $composite_sha ): bool {
+		$prior_ref       = ( $this->option_reader )( self::APPLIED_REF_OPTION );
+		$prior_composite = ( $this->option_reader )( self::APPLIED_COMPOSITE_SHA256_OPTION );
+		$prior_wxr_sha   = ( $this->option_reader )( self::APPLIED_SHA256_OPTION );
+
+		if ( $id !== $prior_ref ) {
+			return false;
+		}
+
+		// Composite-era: trust the composite. Mismatch on any content
+		// sha (templates / options / attachments) triggers re-apply.
+		if ( is_string( $prior_composite ) && '' !== $prior_composite ) {
+			return $composite_sha === $prior_composite;
+		}
+
+		// Pre-composite-era marker (site was last applied by a build
+		// before v0.14.0). Fall back to the old wxr-sha check so the
+		// upgrade doesn't cascade into a forced re-apply for every
+		// site on first install Job run. The next apply (with any
+		// snapshot change) stamps the composite marker and from then
+		// on the precise comparison kicks in.
+		return $wxr_sha === $prior_wxr_sha;
+	}
+
+	/**
+	 * Compute the composite sha256 = sha256 of the four content shas
+	 * concatenated in a stable order. Same input → same output, every
+	 * time (used for both the apply-time decision and the post-apply
+	 * marker).
+	 *
+	 * @param array<string, mixed> $manifest
+	 */
+	private function compute_composite_sha256( array $manifest ): string {
+		$contents = is_array( $manifest['contents'] ?? null ) ? (array) $manifest['contents'] : array();
+		$parts    = array(
+			(string) ( $contents['wxr_sha256'] ?? '' ),
+			(string) ( $contents['templates_sha256'] ?? '' ),
+			(string) ( $contents['options_sha256'] ?? '' ),
+			(string) ( $contents['attachments_sha256'] ?? '' ),
+		);
+		return hash( 'sha256', implode( '|', $parts ) );
 	}
 
 	private function verify_blob( string $path, string $expected_sha ): void {
