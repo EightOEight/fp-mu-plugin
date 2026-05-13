@@ -1,6 +1,6 @@
 <?php
 /**
- * Snapshot restorer — orchestrates `wp fp apply` in fp.snapshot/v4.
+ * Snapshot restorer — orchestrates `wp fp apply` in fp.snapshot/v5.
  *
  * Inverse of {@see \FrankenPress\Cli\Snapshot\Capturer}. Reads a
  * snapshot directory, verifies its integrity, imports the WXR via
@@ -48,9 +48,9 @@ final class Restorer {
 	 * @param callable                     $option_reader   fn(string $key): mixed.
 	 * @param callable                     $option_writer   fn(string $key, mixed $value, bool $autoload): bool.
 	 * @param callable                     $theme_mod_set   fn(string $stylesheet, string $key, mixed $value): void.
-	 * @param callable                     $owned_finder    fn(string $post_type, string $slug): ?int — returns post ID or null.
-	 * @param callable                     $owned_updater   fn(int $post_id, array $fields, array $meta): void.
-	 * @param callable                     $owned_inserter  fn(string $post_type, string $slug, array $fields, array $meta): int.
+	 * @param callable                     $owned_finder    fn(string $post_type, string $slug, array $terms): ?int — returns post ID or null. $terms is the captured `terms` map (taxonomy => [slugs]); for theme-bound post types the closure filters on the `wp_theme` slug to avoid cross-theme collisions.
+	 * @param callable                     $owned_updater   fn(int $post_id, array $fields, array $meta, array $terms): void — wp_update_post + meta writes + wp_set_object_terms (replace, not append).
+	 * @param callable                     $owned_inserter  fn(string $post_type, string $slug, array $fields, array $meta, array $terms): int — wp_insert_post + meta writes + wp_set_object_terms.
 	 * @param callable                     $att_finder      fn(string $relative_file): ?int — looks up attachment post ID by `_wp_attached_file` value.
 	 * @param callable                     $att_updater     fn(int $post_id, array $fields, array $meta): void.
 	 * @param callable                     $att_inserter    fn(array $fields, array $meta): int — wraps `wp_insert_post` for attachments.
@@ -90,8 +90,13 @@ final class Restorer {
 		}
 
 		$schema = (string) ( $manifest['schema'] ?? '' );
-		if ( 'fp.snapshot/v4' !== $schema ) {
-			throw new RuntimeException( "manifest schema {$schema} is not supported by this fp build (accepts fp.snapshot/v4)" );
+		if ( 'fp.snapshot/v5' !== $schema ) {
+			throw new RuntimeException(
+				sprintf(
+					'manifest schema "%s" is not supported by this fp build (accepts fp.snapshot/v5). v4 snapshots were missing taxonomy data and silently shipped renderer-invisible template-part rows — re-run `wp fp snapshot` on a stack with this mu-plugin version to regenerate.',
+					$schema
+				)
+			);
 		}
 
 		if ( $this->already_applied( $id, $expected_sha ) ) {
@@ -444,14 +449,23 @@ final class Restorer {
 	 * Apply the templates.json sidecar — upsert each entry by
 	 * `post_name + post_type`. Existing rows get `wp_update_post`;
 	 * missing rows get `wp_insert_post`. Postmeta in `meta` is set
-	 * via `update_post_meta` after the post fields land.
+	 * via `update_post_meta` after the post fields land. Taxonomy
+	 * terms in `terms` are applied (REPLACE not append) via
+	 * `wp_set_object_terms` so the row is correctly bound to the
+	 * active theme on the target.
+	 *
+	 * Without the taxonomy step, customised `wp_template_part` rows
+	 * are invisible to `get_block_templates()` on the target —
+	 * WP keys design-state lookup off the `wp_theme` taxonomy term,
+	 * not postmeta. v4 snapshots that skipped this step shipped
+	 * renderer-invisible rows (the "header doesn't update on apply"
+	 * symptom from sts-stg 2026-05-13).
 	 *
 	 * Solves the v3 silent-skip problem where WP-Importer's GUID
 	 * dedup retained existing FSE-CPT rows on second-apply, blocking
 	 * designer iteration. See `iteration-ux.md` in the workspace
 	 * `.aidocs/` for the reproduction.
-	 */
-	/**
+	 *
 	 * @param array<int, int> $attachment_id_remap captured_id => local_id
 	 */
 	private function apply_owned_posts( array $attachment_id_remap = array() ): void {
@@ -487,12 +501,13 @@ final class Restorer {
 					'post_excerpt' => (string) ( $entry['post_excerpt'] ?? '' ),
 				);
 				$meta   = is_array( $entry['meta'] ?? null ) ? (array) $entry['meta'] : array();
+				$terms  = is_array( $entry['terms'] ?? null ) ? (array) $entry['terms'] : array();
 
-				$existing_id = ( $this->owned_finder )( $post_type, $slug );
+				$existing_id = ( $this->owned_finder )( $post_type, $slug, $terms );
 				if ( null !== $existing_id ) {
-					( $this->owned_updater )( (int) $existing_id, $fields, $meta );
+					( $this->owned_updater )( (int) $existing_id, $fields, $meta, $terms );
 				} else {
-					( $this->owned_inserter )( $post_type, $slug, $fields, $meta );
+					( $this->owned_inserter )( $post_type, $slug, $fields, $meta, $terms );
 				}
 			}
 		}

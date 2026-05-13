@@ -102,6 +102,21 @@ final class Command {
 
 		$active_stylesheet = (string) get_option( 'stylesheet', '' );
 		$meta_reader       = static fn ( int $post_id, string $key ): mixed => get_post_meta( $post_id, $key, true );
+		$term_reader       = static function ( int $post_id, string $taxonomy ): array {
+			// `wp_get_object_terms` with `fields => slugs` returns a flat
+			// array of term slug strings. On error or when the taxonomy
+			// is not registered (e.g. on an old WP install missing
+			// `wp_template_part_area`) it returns a WP_Error — degrade to
+			// an empty array so capture proceeds.
+			if ( ! function_exists( 'wp_get_object_terms' ) ) {
+				return array();
+			}
+			$slugs = wp_get_object_terms( $post_id, $taxonomy, array( 'fields' => 'slugs' ) );
+			if ( ! is_array( $slugs ) ) {
+				return array();
+			}
+			return array_values( array_filter( $slugs, 'is_string' ) );
+		};
 
 		$post_loader   = static fn ( int $id ): ?object => get_post( $id );
 		$blocks_parser = static fn ( string $content ): array => function_exists( 'parse_blocks' ) ? parse_blocks( $content ) : array();
@@ -116,7 +131,7 @@ final class Command {
 			$active_stylesheet,
 			$this->adapters(),
 			new \FrankenPress\Cli\Snapshot\WxrCapturer( $wp_runner, $sql_runner ),
-			new \FrankenPress\Cli\Snapshot\OwnedPostsCapturer( $sql_runner, $meta_reader, $active_stylesheet ),
+			new \FrankenPress\Cli\Snapshot\OwnedPostsCapturer( $sql_runner, $meta_reader, $term_reader, $active_stylesheet ),
 			new \FrankenPress\Cli\Snapshot\OptionsCapturer( $option_get ),
 			new \FrankenPress\Cli\Snapshot\AttachmentRefCapturer( $option_get, $post_loader, $meta_reader, $blocks_parser, $this->uploads_dir() ),
 		);
@@ -210,34 +225,68 @@ final class Command {
 			// owned_finder: look up existing post by slug+post_type.
 			// Returns ID or null. Use suppress_filters so any installed
 			// query filters don't hide rows we own.
-			static function ( string $post_type, string $slug ): ?int {
-				$found = get_posts(
-					array(
-						'post_type'        => $post_type,
-						'name'             => $slug,
-						'post_status'      => 'any',
-						'numberposts'      => 1,
-						'fields'           => 'ids',
-						'suppress_filters' => true,
-					)
+			//
+			// For theme-bound post types (wp_template / wp_template_part /
+			// wp_global_styles) we ALSO filter by the captured `wp_theme`
+			// term — otherwise we'd risk matching a same-slug row that
+			// belongs to a different theme (e.g. a leftover row from a
+			// previous theme that has the same slug "header"). Apply
+			// would then overwrite that other theme's row rather than
+			// the row for the active theme. The tax_query forces a
+			// theme-correct match.
+			static function ( string $post_type, string $slug, array $terms = array() ): ?int {
+				$query_args = array(
+					'post_type'        => $post_type,
+					'name'             => $slug,
+					'post_status'      => 'any',
+					'numberposts'      => 1,
+					'fields'           => 'ids',
+					'suppress_filters' => true,
 				);
+
+				$theme_slugs = isset( $terms['wp_theme'] ) && is_array( $terms['wp_theme'] )
+					? array_values( array_filter( $terms['wp_theme'], 'is_string' ) )
+					: array();
+				if ( ! empty( $theme_slugs ) ) {
+					$query_args['tax_query'] = array(
+						array(
+							'taxonomy' => 'wp_theme',
+							'field'    => 'slug',
+							'terms'    => $theme_slugs,
+						),
+					);
+				}
+
+				$found = get_posts( $query_args );
 				if ( ! is_array( $found ) || empty( $found ) ) {
 					return null;
 				}
 				return (int) $found[0];
 			},
 			// owned_updater: wp_update_post the snapshot's fields, then
-			// write each meta key.
-			static function ( int $post_id, array $fields, array $meta ): void {
+			// write each meta key, then REPLACE taxonomy terms.
+			//
+			// Terms are replaced (4th arg `false` to wp_set_object_terms),
+			// not appended: the snapshot is the source of truth, so a
+			// previously-broken apply that left a row untermed gets
+			// corrected on the next apply.
+			static function ( int $post_id, array $fields, array $meta, array $terms = array() ): void {
 				wp_update_post( array( 'ID' => $post_id ) + $fields );
 				foreach ( $meta as $k => $v ) {
 					update_post_meta( $post_id, (string) $k, $v );
 				}
+				foreach ( $terms as $taxonomy => $slugs ) {
+					if ( ! is_string( $taxonomy ) || '' === $taxonomy || ! is_array( $slugs ) ) {
+						continue;
+					}
+					wp_set_object_terms( $post_id, $slugs, $taxonomy, false );
+				}
 			},
 			// owned_inserter: wp_insert_post with the snapshot's fields
-			// + slug + post_type, then write each meta key. Returns the
-			// new post ID for caller bookkeeping.
-			static function ( string $post_type, string $slug, array $fields, array $meta ): int {
+			// + slug + post_type, then write each meta key, then set
+			// taxonomy terms. Returns the new post ID for caller
+			// bookkeeping.
+			static function ( string $post_type, string $slug, array $fields, array $meta, array $terms = array() ): int {
 				$id = wp_insert_post(
 					array(
 						'post_type' => $post_type,
@@ -251,6 +300,12 @@ final class Command {
 				}
 				foreach ( $meta as $k => $v ) {
 					update_post_meta( $id, (string) $k, $v );
+				}
+				foreach ( $terms as $taxonomy => $slugs ) {
+					if ( ! is_string( $taxonomy ) || '' === $taxonomy || ! is_array( $slugs ) ) {
+						continue;
+					}
+					wp_set_object_terms( $id, $slugs, $taxonomy, false );
 				}
 				return $id;
 			},
