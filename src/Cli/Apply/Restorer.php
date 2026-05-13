@@ -569,6 +569,22 @@ final class Restorer {
 				if ( ! empty( $attachment_id_remap ) && '' !== $post_content ) {
 					$post_content = $this->rewrite_attachment_ids_in_content( $post_content, $attachment_id_remap );
 				}
+
+				// wp_navigation: rewrite local-page IDs inside
+				// wp:navigation-link / wp:navigation-submenu blocks via
+				// the captured slug → local-id lookup. Done after the
+				// attachment rewrite because the two are disjoint: nav
+				// page IDs never appear in $attachment_id_remap, and
+				// attachment IDs never appear in $page_id_remap (built
+				// here from entry['block_refs']).
+				if ( 'wp_navigation' === $post_type && '' !== $post_content ) {
+					$block_refs    = is_array( $entry['block_refs'] ?? null ) ? (array) $entry['block_refs'] : array();
+					$page_id_remap = $this->resolve_block_refs_to_local_ids( $block_refs );
+					if ( ! empty( $page_id_remap ) ) {
+						$post_content = $this->rewrite_navigation_link_ids_in_content( $post_content, $page_id_remap );
+					}
+				}
+
 				$fields = array(
 					'post_title'   => (string) ( $entry['post_title'] ?? '' ),
 					'post_content' => $post_content,
@@ -586,6 +602,87 @@ final class Restorer {
 				}
 			}
 		}
+	}
+
+	/**
+	 * Walk the captured `block_refs` map for a wp_navigation entry and
+	 * resolve each captured ID to a local post ID via `page_finder`
+	 * (slug + type lookup). Captured refs that don't resolve on the
+	 * target are omitted; the original `id` attr in the markup stays
+	 * untouched + an error_log warning surfaces the gap.
+	 *
+	 * @param array<int|string, array{slug?: string, type?: string}> $block_refs
+	 * @return array<int, int> captured_id => local_id
+	 */
+	private function resolve_block_refs_to_local_ids( array $block_refs ): array {
+		$out = array();
+		foreach ( $block_refs as $captured_id => $ref ) {
+			$captured_id = (int) $captured_id;
+			if ( $captured_id <= 0 || ! is_array( $ref ) ) {
+				continue;
+			}
+			$slug = (string) ( $ref['slug'] ?? '' );
+			$type = (string) ( $ref['type'] ?? '' );
+			if ( '' === $slug || '' === $type ) {
+				continue;
+			}
+			$local_id = ( $this->page_finder )( $slug, $type );
+			if ( null === $local_id ) {
+				error_log(
+					sprintf(
+						"fp apply: wp_navigation block ref slug '%s' (post_type '%s', captured ID %d) not found on target — leaving the link's id attr untouched. The URL search-replace will still rewrite the href; the post-type ref will dangle until the target has a matching slug.",
+						$slug,
+						$type,
+						$captured_id
+					)
+				);
+				continue;
+			}
+			$out[ $captured_id ] = (int) $local_id;
+		}
+		return $out;
+	}
+
+	/**
+	 * Rewrite the `id` attr inside every `wp:navigation-link` and
+	 * `wp:navigation-submenu` block-delimiter line in $content, using
+	 * the captured-id → local-id map.
+	 *
+	 * Scope: only the JSON attrs in the navigation-link / submenu
+	 * block-comment delimiters are touched. Other blocks in the same
+	 * post (image, group, etc.) are unaffected because the outer
+	 * regex anchors on the `wp:navigation-(link|submenu)` block name.
+	 *
+	 * Regex caveat: the outer regex matches a single `{...}` JSON
+	 * object without nested braces. Nav-link attrs never contain
+	 * nested objects in practice (kind/type/url/id/label are all
+	 * scalar), so this is safe for current block shapes. If a future
+	 * core change introduces nested attrs (e.g. an icon object),
+	 * upgrade to a parse_blocks-based walk.
+	 *
+	 * @param array<int, int> $page_id_remap captured_id => local_id
+	 */
+	private function rewrite_navigation_link_ids_in_content( string $content, array $page_id_remap ): string {
+		if ( empty( $page_id_remap ) ) {
+			return $content;
+		}
+		return (string) preg_replace_callback(
+			'/(<!-- wp:navigation-(?:link|submenu)\s+)(\{[^}]+\})(\s*\/?-->)/',
+			static function ( array $outer_m ) use ( $page_id_remap ): string {
+				$rewritten = (string) preg_replace_callback(
+					'/("id"\s*:\s*)(\d+)/',
+					static function ( array $m ) use ( $page_id_remap ): string {
+						$captured = (int) $m[2];
+						return isset( $page_id_remap[ $captured ] )
+							? $m[1] . (string) $page_id_remap[ $captured ]
+							: $m[0];
+					},
+					$outer_m[2]
+				);
+				return $outer_m[1] . $rewritten . $outer_m[3];
+			},
+			$content
+		);
 	}
 
 	/**
