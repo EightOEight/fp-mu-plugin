@@ -81,13 +81,26 @@ final class OwnedPostsCapturer {
 	 * `wp_template_part` (header/footer/uncategorized).
 	 *
 	 * `wp_navigation` is not theme-bound, hence no taxonomies.
+	 * `custom_css` is theme-bound but via post_name (matches the
+	 * stylesheet slug) rather than a taxonomy term — see
+	 * `THEME_BOUND_VIA_POST_NAME` below.
 	 */
 	private const TAXONOMIES = array(
 		'wp_template'      => array( 'wp_theme' ),
 		'wp_template_part' => array( 'wp_theme', 'wp_template_part_area' ),
 		'wp_global_styles' => array( 'wp_theme' ),
 		'wp_navigation'    => array(),
+		'custom_css'       => array(),
 	);
+
+	/**
+	 * Post types whose theme binding lives in `post_name` (= the
+	 * stylesheet slug) rather than the `wp_theme` taxonomy. Captured
+	 * rows whose post_name doesn't match the source stylesheet are
+	 * skipped — we only want the active theme's custom_css, even if
+	 * the source DB carries rows from a previous theme.
+	 */
+	private const THEME_BOUND_VIA_POST_NAME = array( 'custom_css' );
 
 	/**
 	 * Post types for which a missing `wp_theme` term is a fatal capture
@@ -146,6 +159,17 @@ final class OwnedPostsCapturer {
 			foreach ( $rows as $row ) {
 				$slug = (string) ( $row['post_name'] ?? '' );
 				if ( '' === $slug ) {
+					continue;
+				}
+
+				// Filter post-name-bound types (custom_css) to the active
+				// stylesheet. WP keeps a row per theme; we only want the
+				// active theme's custom_css, since that's the design
+				// state the snapshot represents.
+				if ( in_array( $post_type, self::THEME_BOUND_VIA_POST_NAME, true )
+					&& '' !== $this->source_stylesheet
+					&& $slug !== $this->source_stylesheet
+				) {
 					continue;
 				}
 

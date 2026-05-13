@@ -291,6 +291,65 @@ final class CliOwnedPostsCapturerTest extends TestCase {
 		$this->assertSame( array( 'origin' => 'user' ), $out['wp_template']['home']['meta'] );
 	}
 
+	public function test_capture_custom_css_matching_active_stylesheet(): void {
+		// custom_css uses post_name = stylesheet slug. The active
+		// theme's row should be captured.
+		$rows        = array(
+			array(
+				'ID'           => 50,
+				'post_name'    => 'twentytwentyfive',
+				'post_title'   => '',
+				'post_content' => 'body { background: red; }',
+				'post_status'  => 'publish',
+				'post_excerpt' => '',
+			),
+		);
+		$sql_runner  = static fn ( string $sql ): array => $rows;
+		$meta_reader = static fn ( int $id, string $key ): mixed => '';
+		$term_reader = static fn ( int $id, string $tax ): array => array();
+
+		$capturer = new OwnedPostsCapturer( $sql_runner, $meta_reader, $term_reader, 'twentytwentyfive' );
+		$out      = $capturer->capture( new SnapshotScope( post_types_owned: array( 'custom_css' ) ) );
+
+		$this->assertArrayHasKey( 'twentytwentyfive', $out['custom_css'] );
+		$this->assertSame( 'body { background: red; }', $out['custom_css']['twentytwentyfive']['post_content'] );
+		// No taxonomy data emitted — custom_css isn't theme-bound via taxonomy.
+		$this->assertArrayNotHasKey( 'terms', $out['custom_css']['twentytwentyfive'] );
+	}
+
+	public function test_capture_skips_custom_css_for_other_themes(): void {
+		// Two custom_css rows: active theme + prior theme. Only the
+		// active theme's row should land in the snapshot — the prior
+		// theme's CSS would land on the target as inert dead-weight.
+		$rows        = array(
+			array(
+				'ID'           => 50,
+				'post_name'    => 'twentytwentyfive',
+				'post_title'   => '',
+				'post_content' => 'tt5 css',
+				'post_status'  => 'publish',
+				'post_excerpt' => '',
+			),
+			array(
+				'ID'           => 51,
+				'post_name'    => 'twentytwentyfour',
+				'post_title'   => '',
+				'post_content' => 'tt4 css (should not ship)',
+				'post_status'  => 'publish',
+				'post_excerpt' => '',
+			),
+		);
+		$sql_runner  = static fn ( string $sql ): array => $rows;
+		$meta_reader = static fn ( int $id, string $key ): mixed => '';
+		$term_reader = static fn ( int $id, string $tax ): array => array();
+
+		$capturer = new OwnedPostsCapturer( $sql_runner, $meta_reader, $term_reader, 'twentytwentyfive' );
+		$out      = $capturer->capture( new SnapshotScope( post_types_owned: array( 'custom_css' ) ) );
+
+		$this->assertArrayHasKey( 'twentytwentyfive', $out['custom_css'] );
+		$this->assertArrayNotHasKey( 'twentytwentyfour', $out['custom_css'] );
+	}
+
 	public function test_capture_skips_empty_post_types_in_output(): void {
 		// post_types_owned declares 3 types but only one returns rows;
 		// the other two should not appear in the output map (no empty
