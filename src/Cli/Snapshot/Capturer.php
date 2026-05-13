@@ -60,6 +60,7 @@ final class Capturer {
 		private OwnedPostsCapturer $owned,
 		private OptionsCapturer $opts,
 		private AttachmentRefCapturer $attachments,
+		private NavigationBlockRefCapturer $nav_refs,
 	) {}
 
 	/**
@@ -103,7 +104,29 @@ final class Capturer {
 		$wxr_summary = $this->wxr->capture( $scope, $wxr_path );
 
 		$owned_payload = $this->owned->capture( $scope );
-		$owned_json    = json_encode( $owned_payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) . "\n";
+
+		// Enrich wp_navigation entries with block_refs — a captured-id →
+		// {slug, type} map for every wp:navigation-link / wp:navigation-submenu
+		// block in the post content. Apply uses this to rewrite the local
+		// page IDs to the target's IDs via slug lookup.
+		if ( isset( $owned_payload['wp_navigation'] ) ) {
+			foreach ( $owned_payload['wp_navigation'] as $slug => &$entry ) {
+				if ( ! is_array( $entry ) ) {
+					continue;
+				}
+				$content = (string) ( $entry['post_content'] ?? '' );
+				if ( '' === $content ) {
+					continue;
+				}
+				$refs = $this->nav_refs->capture_refs( $content );
+				if ( ! empty( $refs ) ) {
+					$entry['block_refs'] = $refs;
+				}
+			}
+			unset( $entry );
+		}
+
+		$owned_json = json_encode( $owned_payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) . "\n";
 		file_put_contents( $this->output_dir . '/templates.json', $owned_json );
 		$owned_sha256 = hash( 'sha256', $owned_json );
 		$owned_count  = $this->count_owned_entries( $owned_payload );

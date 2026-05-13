@@ -154,6 +154,7 @@ final class Command {
 			new \FrankenPress\Cli\Snapshot\OwnedPostsCapturer( $sql_runner, $meta_reader, $term_reader, $active_stylesheet ),
 			new \FrankenPress\Cli\Snapshot\OptionsCapturer( $option_get, $page_resolver ),
 			new \FrankenPress\Cli\Snapshot\AttachmentRefCapturer( $option_get, $post_loader, $meta_reader, $blocks_parser, $this->uploads_dir() ),
+			new \FrankenPress\Cli\Snapshot\NavigationBlockRefCapturer( $blocks_parser, $page_resolver ),
 		);
 
 		try {
