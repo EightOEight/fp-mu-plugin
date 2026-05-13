@@ -61,6 +61,7 @@ final class Capturer {
 		private OptionsCapturer $opts,
 		private AttachmentRefCapturer $attachments,
 		private NavigationBlockRefCapturer $nav_refs,
+		private DriftLinter $drift_linter,
 	) {}
 
 	/**
@@ -99,6 +100,14 @@ final class Capturer {
 		if ( $scope->is_empty() ) {
 			throw new RuntimeException( 'adapter scope is empty; refusing to snapshot' );
 		}
+
+		// Pre-capture drift check: if the active site has plugins or
+		// a theme that aren't composer-installed (e.g. a designer used
+		// WP admin to install a plugin during evaluation), refuse to
+		// snapshot — the captured markup would reference blocks/styles
+		// not registered on prod. Designer either composer-requires
+		// the dep or deactivates it before re-running snapshot.
+		$this->drift_linter->check();
 
 		$wxr_path    = $this->output_dir . '/content.xml.gz';
 		$wxr_summary = $this->wxr->capture( $scope, $wxr_path );

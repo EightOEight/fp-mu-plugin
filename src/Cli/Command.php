@@ -155,6 +155,10 @@ final class Command {
 			new \FrankenPress\Cli\Snapshot\OptionsCapturer( $option_get, $page_resolver ),
 			new \FrankenPress\Cli\Snapshot\AttachmentRefCapturer( $option_get, $post_loader, $meta_reader, $blocks_parser, $this->uploads_dir() ),
 			new \FrankenPress\Cli\Snapshot\NavigationBlockRefCapturer( $blocks_parser, $page_resolver ),
+			new \FrankenPress\Cli\Snapshot\DriftLinter(
+				$this->composer_packages_reader(),
+				$this->active_state_reader(),
+			),
 		);
 
 		try {
@@ -546,5 +550,106 @@ final class Command {
 	 */
 	private function adapters(): array {
 		return array( new Fse() );
+	}
+
+	/**
+	 * Build the closure that DriftLinter uses to read the set of
+	 * composer-installed plugin + theme slugs.
+	 *
+	 * Reads `<project-root>/vendor/composer/installed.json` — the
+	 * canonical post-composer-install artifact. Bedrock layout puts
+	 * this two levels above ABSPATH (ABSPATH = `<root>/web/wp/`,
+	 * vendor lives at `<root>/vendor/`).
+	 *
+	 * @return callable(): array{plugins: array<int, string>, themes: array<int, string>}
+	 */
+	private function composer_packages_reader(): callable {
+		$root = $this->project_root();
+		return static function () use ( $root ): array {
+			$path = $root . '/vendor/composer/installed.json';
+			if ( '' === $root || ! is_file( $path ) ) {
+				return array(
+					'plugins' => array(),
+					'themes'  => array(),
+				);
+			}
+			$raw     = (string) file_get_contents( $path );
+			$decoded = json_decode( $raw, true );
+			$pkgs    = is_array( $decoded['packages'] ?? null ) ? (array) $decoded['packages'] : array();
+			$plugins = array();
+			$themes  = array();
+			foreach ( $pkgs as $pkg ) {
+				if ( ! is_array( $pkg ) ) {
+					continue;
+				}
+				$name = (string) ( $pkg['name'] ?? '' );
+				$type = (string) ( $pkg['type'] ?? '' );
+				if ( '' === $name ) {
+					continue;
+				}
+				$slug = $name;
+				if ( false !== strpos( $name, '/' ) ) {
+					$slug = substr( $name, (int) strpos( $name, '/' ) + 1 );
+				}
+				if ( 'wordpress-plugin' === $type ) {
+					$plugins[] = $slug;
+				} elseif ( 'wordpress-theme' === $type ) {
+					$themes[] = $slug;
+				}
+			}
+			return array(
+				'plugins' => $plugins,
+				'themes'  => $themes,
+			);
+		};
+	}
+
+	/**
+	 * Build the closure that DriftLinter uses to read the active
+	 * plugin slugs + active theme slug from WP.
+	 *
+	 * `active_plugins` values are paths like `<slug>/<slug>.php`;
+	 * extract the leading directory component (the slug).
+	 *
+	 * @return callable(): array{plugins: array<int, string>, theme: string}
+	 */
+	private function active_state_reader(): callable {
+		return static function (): array {
+			$raw     = function_exists( 'get_option' ) ? get_option( 'active_plugins', array() ) : array();
+			$plugins = array();
+			if ( is_array( $raw ) ) {
+				foreach ( $raw as $path ) {
+					$path = (string) $path;
+					if ( '' === $path ) {
+						continue;
+					}
+					$slug      = false !== strpos( $path, '/' )
+						? substr( $path, 0, (int) strpos( $path, '/' ) )
+						: $path;
+					$plugins[] = $slug;
+				}
+			}
+			$theme = function_exists( 'get_option' ) ? (string) get_option( 'stylesheet', '' ) : '';
+			return array(
+				'plugins' => $plugins,
+				'theme'   => $theme,
+			);
+		};
+	}
+
+	/**
+	 * Resolve the project root (the directory containing
+	 * composer.json and vendor/). Bedrock-aware: ABSPATH is
+	 * `<root>/web/wp/`, so dirname(ABSPATH, 2) → root.
+	 */
+	private function project_root(): string {
+		$abspath = defined( 'ABSPATH' ) ? rtrim( (string) constant( 'ABSPATH' ), '/' ) : '';
+		if ( '' === $abspath ) {
+			return '';
+		}
+		if ( '/web/wp' === substr( $abspath, -7 ) ) {
+			return dirname( $abspath, 2 );
+		}
+		return dirname( $abspath );
 	}
 }
