@@ -395,6 +395,48 @@ final class Command {
 				}
 				return (int) $post->ID;
 			},
+			// owned_lister: list existing owned-post rows on the target.
+			// Reaper uses this to find orphan rows whose slug isn't in
+			// the captured set. Theme-bound types filter by `wp_theme`
+			// taxonomy = $theme_slug so other themes' rows survive
+			// untouched.
+			static function ( string $post_type, ?string $theme_slug ): array {
+				$query_args = array(
+					'post_type'        => $post_type,
+					'post_status'      => 'any',
+					'posts_per_page'   => -1,
+					'fields'           => 'ids',
+					'suppress_filters' => true,
+				);
+				if ( null !== $theme_slug && '' !== $theme_slug ) {
+					$query_args['tax_query'] = array(
+						array(
+							'taxonomy' => 'wp_theme',
+							'field'    => 'slug',
+							'terms'    => array( $theme_slug ),
+						),
+					);
+				}
+				$ids = get_posts( $query_args );
+				if ( ! is_array( $ids ) ) {
+					return array();
+				}
+				$out = array();
+				foreach ( $ids as $id ) {
+					$id   = (int) $id;
+					$post = get_post( $id );
+					if ( is_object( $post ) && isset( $post->post_name ) ) {
+						$out[ $id ] = (string) $post->post_name;
+					}
+				}
+				return $out;
+			},
+			// owned_trasher: soft-delete a row (move to wp_posts.post_status='trash').
+			// Reaper uses this to remove orphans rather than hard-delete
+			// — recoverable from the WP admin Trash UI.
+			static function ( int $post_id ): void {
+				wp_trash_post( $post_id );
+			},
 			// uploads_basedir: the canonical wp_upload_dir basedir.
 			// When S3UploadsBootstrap is active this is an `s3://` stream
 			// wrapper path, so `copy()` into this directory transparently

@@ -216,6 +216,8 @@ final class CliRestorerOwnedPostsTest extends TestCase {
 			$att_updater,
 			$att_inserter,
 			$page_finder,
+			static fn ( string $pt, ?string $theme ): array => array(),
+			static function (): void {},
 			'/tmp/uploads',
 			'http://target.example/app/uploads',
 		);
