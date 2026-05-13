@@ -45,7 +45,8 @@ use RuntimeException;
 final class Capturer {
 
 	/**
-	 * @param array<int, AdapterInterface> $adapters  Registered adapters; only one may detect() positively.
+	 * @param array<int, AdapterInterface> $adapters              Registered adapters; only one may detect() positively.
+	 * @param callable                     $attachment_enumerator Function (): array<int, string> — returns every `_wp_attached_file` path in the source media library. Used to identify unreferenced attachments (designer-uploaded but not referenced by any captured option/owned-post block content) so the designer can decide whether to delete them locally or composer-package them. Production wraps a SELECT on `wp_postmeta WHERE meta_key = '_wp_attached_file'`.
 	 */
 	public function __construct(
 		private string $output_dir,
@@ -62,6 +63,7 @@ final class Capturer {
 		private AttachmentRefCapturer $attachments,
 		private NavigationBlockRefCapturer $nav_refs,
 		private DriftLinter $drift_linter,
+		private $attachment_enumerator,
 	) {}
 
 	/**
@@ -150,6 +152,15 @@ final class Capturer {
 		file_put_contents( $this->output_dir . '/attachments.json', $attachments_json );
 		$attachments_sha256 = hash( 'sha256', $attachments_json );
 		$binaries_summary   = $this->attachments->capture_binaries( $attachments_payload['by_file'], $this->output_dir );
+
+		// Surface unreferenced media-library attachments so the
+		// designer can decide whether to delete them locally or
+		// composer-package the plugin that uses them. Not a failure
+		// — capture proceeds. Designed for visibility, not
+		// enforcement: the captured set is intentionally
+		// reference-only (see workspace memory
+		// feedback_snapshot_design_not_content.md).
+		$this->report_unreferenced_attachments( $attachments_payload['by_file'] );
 
 		$uploads_manifest = $this->build_uploads_manifest();
 		file_put_contents( $this->output_dir . '/uploads-manifest.txt', $uploads_manifest['text'] );
@@ -258,6 +269,51 @@ final class Capturer {
 			$n += count( $by_slug );
 		}
 		return $n;
+	}
+
+	/**
+	 * Log a warning per media-library attachment that's NOT in the
+	 * captured by_file set. Designed for designer visibility — the
+	 * captured set is intentionally reference-only (snapshot ships
+	 * design, editor owns content; see workspace memory
+	 * `feedback_snapshot_design_not_content.md`). Unreferenced
+	 * attachments are draft logos, evaluation imagery, etc. that
+	 * won't travel to prod — the designer should know that they
+	 * exist locally but aren't being shipped.
+	 *
+	 * @param array<string, array<string, mixed>> $by_file
+	 */
+	private function report_unreferenced_attachments( array $by_file ): void {
+		$all = ( $this->attachment_enumerator )();
+		if ( ! is_array( $all ) || empty( $all ) ) {
+			return;
+		}
+		$captured = array_flip( array_keys( $by_file ) );
+		$unref    = array();
+		foreach ( $all as $file ) {
+			$file = (string) $file;
+			if ( '' === $file ) {
+				continue;
+			}
+			if ( ! isset( $captured[ $file ] ) ) {
+				$unref[] = $file;
+			}
+		}
+		if ( empty( $unref ) ) {
+			return;
+		}
+		sort( $unref );
+		$count = count( $unref );
+		error_log(
+			sprintf(
+				'fp snapshot: %d media-library attachment%s not referenced by any captured option or owned-post block content — NOT shipped. Designer-uploaded draft imagery is fine to leave; if any are load-bearing for prod, reference them from an option or owned-post block before re-snapshotting.',
+				$count,
+				1 === $count ? '' : 's'
+			)
+		);
+		foreach ( $unref as $f ) {
+			error_log( '  - ' . $f );
+		}
 	}
 
 	/**
