@@ -39,6 +39,7 @@ Public docs: **<https://docs.frankenpress.com/components/mu-plugin>**
 - **Hard-coded refusal beats silent fallback — in-cluster.** When the bootstrap is active and `FP_S3_BUCKET`/`KEY`/`SECRET` are missing, it registers `wp_handle_upload_prefilter` to **reject every upload**. In a Kubernetes deploy, silently writing to local disk is far worse than a hard fail. **Out-of-cluster the bootstrap auto-disables** (gated on `KUBERNETES_SERVICE_HOST`) so local dev gets ordinary local-disk uploads — the s3:// stream wrapper doesn't support every operation admin install flows need. Force-on for local S3 testing with `FP_S3_DISABLED=0`.
 - **PSR-4 namespace is `FrankenPress\\`.** Don't introduce sub-namespaces deeper than `FrankenPress\Integrations\<X>` unless there's a reason.
 - **Strict types declared in every file** (`declare(strict_types=1);`).
+- **Apply is loud about missing binaries (v0.14.0+).** `Restorer::apply()` runs `verify_attachment_binaries()` before any DB writes; a snapshot whose `attachments.json` declares files not present under `<snapshot_dir>/uploads/` produces a `WP_CLI::error()` listing the offending paths and exits non-zero, instead of the pre-v0.14 silent skip that left a broken-image front end + apply exit 0. `copy_binaries()`'s old `continue`-past-missing-file path is also a hard throw now (defense in depth for the preflight→copy race). If you're adding a new attachment-handling code path, the preflight pattern is the example to copy.
 
 ## Don'ts
 
