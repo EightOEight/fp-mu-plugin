@@ -19,6 +19,11 @@
         "composer/installers": "^2.0",
         "humanmade/s3-uploads": "^3.0"
     },
+    "conflict": {
+        "wpackagist-plugin/wp-mail-smtp": "*",
+        "wpackagist-plugin/fluent-smtp": "*",
+        "wpackagist-plugin/easy-wp-smtp": "*"
+    },
     "require-dev": {
         "phpunit/phpunit": "^10.5",
         "mockery/mockery": "^1.6",
