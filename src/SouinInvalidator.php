@@ -236,17 +236,20 @@ final class SouinInvalidator {
 		$total = 0;
 		try {
 			foreach ( array( 'GET-*', 'IDX_*', 'SURROGATE_*' ) as $pattern ) {
+				// Predis SCAN: cursor is passed by reference and updated to
+				// the next cursor value (0 when iteration is complete). Loop
+				// terminates on cursor 0 (`(int) '0' === 0`, `(int) null === 0`
+				// covers the pre-first-call case), or on an empty / non-array
+				// batch (defensive — should not happen against a healthy
+				// Redis but a network glitch shouldn't loop forever).
 				$cursor = null;
-				while ( true ) {
+				do {
 					$batch = $this->redis->scan( $cursor, $pattern, 256 );
 					if ( ! is_array( $batch ) || empty( $batch ) ) {
 						break;
 					}
 					$total += (int) $this->redis->del( $batch );
-					if ( null === $cursor || 0 === (int) $cursor ) {
-						break;
-					}
-				}
+				} while ( 0 !== (int) $cursor );
 			}
 		} catch ( Throwable $e ) {
 			$this->log_error( 'invalidate_all failed', $e );
