@@ -125,6 +125,14 @@ final class Restorer {
 			return 'skipped';
 		}
 
+		// Preflight: every binary declared in attachments.json must
+		// exist under <snapshot_dir>/uploads/ before any DB writes.
+		// Catching missing binaries here turns the previously-silent
+		// failure mode — attachment post lands, file does not, front
+		// end 404s — into a loud apply abort with the offending paths
+		// named, so designers see the gap before they cut a release.
+		$this->verify_attachment_binaries();
+
 		$wxr_path = $this->snapshot_dir . '/content.xml.gz';
 		$this->verify_blob( $wxr_path, $expected_sha );
 
@@ -958,6 +966,69 @@ final class Restorer {
 	}
 
 	/**
+	 * Stat every binary declared in attachments.json against
+	 * <snapshot_dir>/uploads/<rel>. Throws a RuntimeException
+	 * listing every missing path if any are absent. Idempotent /
+	 * read-only — safe to call before any DB writes.
+	 *
+	 * The motivation: copy_binaries() previously skipped past missing
+	 * binaries silently, on the assumption that "the file will be
+	 * uploaded out-of-band later". In practice the symptom is a
+	 * broken-image front end after `fp apply` and no in-band signal
+	 * that anything went wrong. The preflight surfaces the gap as an
+	 * apply-time error, naming the offending paths.
+	 *
+	 * @throws RuntimeException when one or more declared binaries
+	 *                          are missing from the snapshot dir.
+	 */
+	private function verify_attachment_binaries(): void {
+		$path = $this->snapshot_dir . '/attachments.json';
+		if ( ! is_file( $path ) ) {
+			return;
+		}
+		$raw = file_get_contents( $path );
+		if ( false === $raw || '' === $raw ) {
+			return;
+		}
+		$payload = json_decode( $raw, true );
+		if ( ! is_array( $payload ) ) {
+			return;
+		}
+		$by_file = is_array( $payload['by_file'] ?? null ) ? (array) $payload['by_file'] : array();
+
+		$missing = array();
+		foreach ( $by_file as $entry ) {
+			if ( ! is_array( $entry ) ) {
+				continue;
+			}
+			$files = (array) ( $entry['files'] ?? array() );
+			foreach ( $files as $rel ) {
+				$rel = (string) $rel;
+				if ( '' === $rel ) {
+					continue;
+				}
+				if ( ! is_file( $this->snapshot_dir . '/uploads/' . $rel ) ) {
+					$missing[] = $rel;
+				}
+			}
+		}
+
+		if ( empty( $missing ) ) {
+			return;
+		}
+
+		sort( $missing );
+		throw new RuntimeException(
+			sprintf(
+				"snapshot is missing %d binary file(s) declared in attachments.json:\n  - %s\n\nthese files must be present under %s/uploads/ before apply can run. re-capture the snapshot from a stack that has the original assets, or restore the files from version control.",
+				count( $missing ),
+				implode( "\n  - ", $missing ),
+				$this->snapshot_dir
+			)
+		);
+	}
+
+	/**
 	 * Apply the attachments.json sidecar — upsert each captured
 	 * attachment by `_wp_attached_file` (relative path under uploads,
 	 * stable across environments), copy its binary files into
@@ -1036,11 +1107,11 @@ final class Restorer {
 			}
 			$src = $this->snapshot_dir . '/uploads/' . $rel;
 			if ( ! is_file( $src ) ) {
-				// Snapshot was captured without the binary on disk;
-				// skip silently. The attachment post still landed
-				// (so option_remap works) but the URL will 404 until
-				// the file is uploaded out-of-band.
-				continue;
+				// The apply() preflight (verify_attachment_binaries)
+				// already caught missing binaries before any DB writes.
+				// Reaching here means a file was removed mid-apply —
+				// fail loudly rather than landing a broken-image row.
+				throw new RuntimeException( "apply: declared binary missing at copy stage {$src}" );
 			}
 			$dest = $this->uploads_basedir . '/' . $rel;
 			// Ensure the dest directory exists. With the s3-uploads
