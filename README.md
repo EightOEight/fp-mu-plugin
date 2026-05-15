@@ -142,8 +142,8 @@ cache layer must not break WP itself.
 | `FP_SMTP_HOST` | (unset) | SMTP server hostname (e.g. `smtp.postmarkapp.com`). Component is a no-op when unset. |
 | `FP_SMTP_PORT` | `587` | TCP port |
 | `FP_SMTP_ENCRYPTION` | `tls` | `tls` (STARTTLS), `ssl` (implicit TLS), `none` (local dev only) |
-| `FP_SMTP_USERNAME` | (unset) | SMTP auth username |
-| `FP_SMTP_PASSWORD` | (unset) | SMTP auth password |
+| `FP_SMTP_USERNAME` | (unset; **required** when `FP_SMTP_HOST` is set) | SMTP auth username. Skip only for unauthenticated dev servers (mailpit, mailhog). |
+| `FP_SMTP_PASSWORD` | (unset; **required** when `FP_SMTP_HOST` is set) | SMTP auth password. Skip only for unauthenticated dev servers. |
 | `FP_SMTP_FROM_EMAIL` | (WP `admin_email`) | `wp_mail_from` filter target |
 | `FP_SMTP_FROM_NAME` | (WP `blogname`) | `wp_mail_from_name` filter target |
 | `FP_SMTP_DISABLED` | `false` | Truthy to no-op the bootstrap. **Local dev only** — the chart never sets this; chart-level `smtp.enabled: false` covers the same need by simply not injecting the env. |
