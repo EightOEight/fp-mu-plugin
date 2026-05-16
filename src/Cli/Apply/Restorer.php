@@ -416,12 +416,19 @@ final class Restorer {
 			'--authors=skip',
 			'--skip=image_resize',
 		);
-		$descs      = array(
+		// Signal the subprocess's mu-plugin to remap post_author on
+		// every imported row. Without this, WP-Importer's --authors=skip
+		// + --allow-root combo lands every row with post_author=0 (WP
+		// Media Library renders "(no author)"). See AuthorRemapper for
+		// the full rationale. Inherited by proc_open by default since
+		// we don't pass an explicit `env` arg.
+		putenv( 'FP_APPLY_REMAP_AUTHORS=1' );
+		$descs = array(
 			0 => array( 'file', '/dev/null', 'r' ),
 			1 => array( 'pipe', 'w' ),
 			2 => array( 'file', $stderr_log, 'w' ),
 		);
-		$proc       = proc_open( $cmd, $descs, $pipes );
+		$proc  = proc_open( $cmd, $descs, $pipes );
 		if ( ! is_resource( $proc ) ) {
 			throw new RuntimeException( 'apply: proc_open(wp import) failed' );
 		}
