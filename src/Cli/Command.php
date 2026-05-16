@@ -34,7 +34,7 @@ namespace FrankenPress\Cli;
 use FrankenPress\Cli\Adapters\AdapterInterface;
 use FrankenPress\Cli\Adapters\Fse;
 use FrankenPress\Cli\Apply\Restorer;
-use FrankenPress\Cli\Snapshot\Capturer;
+use FrankenPress\Cli\Snapshot\Factory;
 use Throwable;
 
 /**
@@ -71,97 +71,7 @@ final class Command {
 		$note       = (string) ( $assoc_args['note'] ?? '' );
 		$output_dir = $this->resolve_output_dir( $assoc_args, $slug );
 
-		$wp_runner  = static function ( string $command, array $assoc ): mixed {
-			return \WP_CLI::runcommand(
-				$command,
-				array(
-					'return'     => 'all',
-					// launch=true → spawn a subprocess per inner wp-cli
-					// invocation. Required because some wp-cli commands
-					// (notably `wp export`) call exit() internally; with
-					// launch=false they'd terminate the outer wp fp
-					// process silently mid-flight, leaving partial output
-					// + no diagnostic. Subprocess isolation is the
-					// safety boundary.
-					'launch'     => true,
-					'exit_error' => false,
-				) + $assoc
-			);
-		};
-		$sql_runner = static function ( string $sql ): array {
-			global $wpdb;
-			// SQL is composed by WxrCapturer from adapter-declared
-			// post-type names — not from user input — so $wpdb->prepare()
-			// placeholders don't apply here. The capturer escapes values
-			// defensively before composing.
-			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-			$rows = $wpdb->get_results( $sql, ARRAY_A );
-			return is_array( $rows ) ? $rows : array();
-		};
-		$option_get = static fn ( string $key ): mixed => get_option( $key );
-
-		$active_stylesheet = (string) get_option( 'stylesheet', '' );
-		$meta_reader       = static fn ( int $post_id, string $key ): mixed => get_post_meta( $post_id, $key, true );
-		$term_reader       = static function ( int $post_id, string $taxonomy ): array {
-			// `wp_get_object_terms` with `fields => slugs` returns a flat
-			// array of term slug strings. On error or when the taxonomy
-			// is not registered (e.g. on an old WP install missing
-			// `wp_template_part_area`) it returns a WP_Error — degrade to
-			// an empty array so capture proceeds.
-			if ( ! function_exists( 'wp_get_object_terms' ) ) {
-				return array();
-			}
-			$slugs = wp_get_object_terms( $post_id, $taxonomy, array( 'fields' => 'slugs' ) );
-			if ( ! is_array( $slugs ) ) {
-				return array();
-			}
-			return array_values( array_filter( $slugs, 'is_string' ) );
-		};
-
-		$post_loader   = static fn ( int $id ): ?object => get_post( $id );
-		$blocks_parser = static fn ( string $content ): array => function_exists( 'parse_blocks' ) ? parse_blocks( $content ) : array();
-		$page_resolver = static function ( int $post_id ): ?array {
-			// Resolve a post ID to its slug + post_type for the page-ref
-			// snapshot path. Returns null when the post doesn't exist or
-			// isn't published — capture skips the ref so apply leaves
-			// the target's value alone rather than stamping a slug that
-			// won't resolve anywhere.
-			$post = get_post( $post_id );
-			if ( ! is_object( $post ) ) {
-				return null;
-			}
-			$slug = isset( $post->post_name ) ? (string) $post->post_name : '';
-			$type = isset( $post->post_type ) ? (string) $post->post_type : '';
-			if ( '' === $slug || '' === $type ) {
-				return null;
-			}
-			return array(
-				'slug' => $slug,
-				'type' => $type,
-			);
-		};
-
-		$capturer = new Capturer(
-			$output_dir,
-			$slug,
-			$note,
-			$this->uploads_dir(),
-			(string) home_url(),
-			$this->wp_version_safe(),
-			$active_stylesheet,
-			$this->adapters(),
-			new \FrankenPress\Cli\Snapshot\WxrCapturer( $wp_runner, $sql_runner ),
-			new \FrankenPress\Cli\Snapshot\OwnedPostsCapturer( $sql_runner, $meta_reader, $term_reader, $active_stylesheet ),
-			new \FrankenPress\Cli\Snapshot\OptionsCapturer( $option_get, $page_resolver ),
-			new \FrankenPress\Cli\Snapshot\AttachmentRefCapturer( $option_get, $post_loader, $meta_reader, $blocks_parser, $this->uploads_dir() ),
-			new \FrankenPress\Cli\Snapshot\NavigationBlockRefCapturer( $blocks_parser, $page_resolver ),
-			new \FrankenPress\Cli\Snapshot\DriftLinter(
-				$this->composer_packages_reader(),
-				$this->active_state_reader(),
-				$this->site_tracked_reader(),
-			),
-			$this->attachment_enumerator(),
-		);
+		$capturer = ( new Factory() )->make( $output_dir, $slug, $note );
 
 		try {
 			$manifest_path = $capturer->capture();
@@ -538,24 +448,6 @@ final class Command {
 		return rtrim( $root, '/' ) . "/web/imports/{$safe}";
 	}
 
-	private function uploads_dir(): string {
-		if ( function_exists( 'wp_get_upload_dir' ) ) {
-			$dirs = wp_get_upload_dir();
-			if ( is_array( $dirs ) && isset( $dirs['basedir'] ) ) {
-				return (string) $dirs['basedir'];
-			}
-		}
-		if ( defined( 'WP_CONTENT_DIR' ) ) {
-			return rtrim( (string) constant( 'WP_CONTENT_DIR' ), '/' ) . '/uploads';
-		}
-		return '';
-	}
-
-	private function wp_version_safe(): string {
-		global $wp_version;
-		return isset( $wp_version ) ? (string) $wp_version : '';
-	}
-
 	/**
 	 * Registered snapshot adapters. v0.10.0 hard-codes Fse; a future
 	 * phase swaps this for a registry pattern so other components (or
@@ -567,186 +459,16 @@ final class Command {
 		return array( new Fse() );
 	}
 
-	/**
-	 * Build the closure that DriftLinter uses to read the set of
-	 * composer-installed plugin + theme slugs.
-	 *
-	 * Reads `<project-root>/vendor/composer/installed.json` — the
-	 * canonical post-composer-install artifact. Bedrock layout puts
-	 * this two levels above ABSPATH (ABSPATH = `<root>/web/wp/`,
-	 * vendor lives at `<root>/vendor/`).
-	 *
-	 * @return callable(): array{plugins: array<int, string>, themes: array<int, string>}
-	 */
-	private function composer_packages_reader(): callable {
-		$root = $this->project_root();
-		return static function () use ( $root ): array {
-			$path = $root . '/vendor/composer/installed.json';
-			if ( '' === $root || ! is_file( $path ) ) {
-				return array(
-					'plugins' => array(),
-					'themes'  => array(),
-				);
+	private function uploads_dir(): string {
+		if ( function_exists( 'wp_get_upload_dir' ) ) {
+			$dirs = wp_get_upload_dir();
+			if ( is_array( $dirs ) && isset( $dirs['basedir'] ) ) {
+				return (string) $dirs['basedir'];
 			}
-			$raw     = (string) file_get_contents( $path );
-			$decoded = json_decode( $raw, true );
-			$pkgs    = is_array( $decoded['packages'] ?? null ) ? (array) $decoded['packages'] : array();
-			$plugins = array();
-			$themes  = array();
-			foreach ( $pkgs as $pkg ) {
-				if ( ! is_array( $pkg ) ) {
-					continue;
-				}
-				$name = (string) ( $pkg['name'] ?? '' );
-				$type = (string) ( $pkg['type'] ?? '' );
-				if ( '' === $name ) {
-					continue;
-				}
-				$slug = $name;
-				if ( false !== strpos( $name, '/' ) ) {
-					$slug = substr( $name, (int) strpos( $name, '/' ) + 1 );
-				}
-				if ( 'wordpress-plugin' === $type ) {
-					$plugins[] = $slug;
-				} elseif ( 'wordpress-theme' === $type ) {
-					$themes[] = $slug;
-				}
-			}
-			return array(
-				'plugins' => $plugins,
-				'themes'  => $themes,
-			);
-		};
-	}
-
-	/**
-	 * Build the closure that DriftLinter uses to read the active
-	 * plugin slugs + active theme slug from WP.
-	 *
-	 * `active_plugins` values are paths like `<slug>/<slug>.php`;
-	 * extract the leading directory component (the slug).
-	 *
-	 * @return callable(): array{plugins: array<int, string>, theme: string}
-	 */
-	private function active_state_reader(): callable {
-		return static function (): array {
-			$raw     = function_exists( 'get_option' ) ? get_option( 'active_plugins', array() ) : array();
-			$plugins = array();
-			if ( is_array( $raw ) ) {
-				foreach ( $raw as $path ) {
-					$path = (string) $path;
-					if ( '' === $path ) {
-						continue;
-					}
-					$slug      = false !== strpos( $path, '/' )
-						? substr( $path, 0, (int) strpos( $path, '/' ) )
-						: $path;
-					$plugins[] = $slug;
-				}
-			}
-			$theme = function_exists( 'get_option' ) ? (string) get_option( 'stylesheet', '' ) : '';
-			return array(
-				'plugins' => $plugins,
-				'theme'   => $theme,
-			);
-		};
-	}
-
-	/**
-	 * Build the closure that DriftLinter uses to enumerate the set
-	 * of plugin + theme slugs site-tracked under WP_CONTENT_DIR/
-	 * (regardless of composer provenance).
-	 *
-	 * Catches site-tracked entries that ride into the production
-	 * image via the Dockerfile's `web/app/` COPY — e.g. a Phase 3
-	 * child theme committed at `web/app/themes/<site>-design/`.
-	 *
-	 * Production WP_CONTENT_DIR resolves to `<bedrock-root>/web/app`;
-	 * `<dir>/plugins/<slug>/` and `<dir>/themes/<slug>/` are the
-	 * canonical paths.
-	 *
-	 * @return callable(): array{plugins: array<int, string>, themes: array<int, string>}
-	 */
-	private function site_tracked_reader(): callable {
-		$content_dir = defined( 'WP_CONTENT_DIR' ) ? rtrim( (string) constant( 'WP_CONTENT_DIR' ), '/' ) : '';
-		return static function () use ( $content_dir ): array {
-			$out = array(
-				'plugins' => array(),
-				'themes'  => array(),
-			);
-			if ( '' === $content_dir ) {
-				return $out;
-			}
-			foreach ( array( 'plugins', 'themes' ) as $kind ) {
-				$dir = $content_dir . '/' . $kind;
-				if ( ! is_dir( $dir ) ) {
-					continue;
-				}
-				$entries = scandir( $dir );
-				if ( false === $entries ) {
-					continue;
-				}
-				foreach ( $entries as $entry ) {
-					if ( '.' === $entry || '..' === $entry ) {
-						continue;
-					}
-					$path = $dir . '/' . $entry;
-					if ( ! is_dir( $path ) ) {
-						continue;
-					}
-					$out[ $kind ][] = $entry;
-				}
-			}
-			return $out;
-		};
-	}
-
-	/**
-	 * Build the closure that enumerates every attached_file path
-	 * in the source media library, for the
-	 * unreferenced-attachment-warning pass in Capturer.
-	 *
-	 * @return callable(): array<int, string>
-	 */
-	private function attachment_enumerator(): callable {
-		return static function (): array {
-			global $wpdb;
-			if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) {
-				return array();
-			}
-			// SELECT meta_value alone is sufficient — _wp_attached_file
-			// is one-per-attachment and the value IS the relative path.
-			// Strings are escaped at insert; meta_key is a literal,
-			// not user-supplied; no $wpdb->prepare needed here.
-			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-			$rows = $wpdb->get_col( "SELECT meta_value FROM {$wpdb->postmeta} WHERE meta_key = '_wp_attached_file'" );
-			if ( ! is_array( $rows ) ) {
-				return array();
-			}
-			$out = array();
-			foreach ( $rows as $row ) {
-				$row = (string) $row;
-				if ( '' !== $row ) {
-					$out[] = $row;
-				}
-			}
-			return $out;
-		};
-	}
-
-	/**
-	 * Resolve the project root (the directory containing
-	 * composer.json and vendor/). Bedrock-aware: ABSPATH is
-	 * `<root>/web/wp/`, so dirname(ABSPATH, 2) → root.
-	 */
-	private function project_root(): string {
-		$abspath = defined( 'ABSPATH' ) ? rtrim( (string) constant( 'ABSPATH' ), '/' ) : '';
-		if ( '' === $abspath ) {
-			return '';
 		}
-		if ( '/web/wp' === substr( $abspath, -7 ) ) {
-			return dirname( $abspath, 2 );
+		if ( defined( 'WP_CONTENT_DIR' ) ) {
+			return rtrim( (string) constant( 'WP_CONTENT_DIR' ), '/' ) . '/uploads';
 		}
-		return dirname( $abspath );
+		return '';
 	}
 }
