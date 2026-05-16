@@ -1237,6 +1237,20 @@ final class Restorer {
 				( $this->theme_mod_set )( (string) $stylesheet, (string) $key, $value );
 			}
 		}
+
+		// Regenerate the rewrite-rules table after options are applied.
+		// `permalink_structure` lands here as a plain `update_option` write,
+		// which doesn't trigger WordPress's own implicit flush (that's
+		// only wired for certain admin / REST paths). Without this every
+		// post permalink 404s on a fresh apply — the option says "use
+		// /%year%/%monthnum%/%day%/%postname%/" but the rules table has
+		// no pattern matching that shape. Soft flush (false) skips the
+		// .htaccess rewrite — Caddy ignores .htaccess anyway, and the
+		// in-memory option `rewrite_rules` is what WP_Rewrite reads on
+		// every request. Cheap, idempotent, always-safe.
+		if ( function_exists( 'flush_rewrite_rules' ) ) {
+			flush_rewrite_rules( false );
+		}
 	}
 
 	private function retarget_urls( string $source_url, string $target_url ): void {

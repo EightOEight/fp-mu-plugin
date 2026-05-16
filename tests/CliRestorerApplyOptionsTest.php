@@ -12,6 +12,8 @@ declare(strict_types=1);
 
 namespace FrankenPress\Tests;
 
+use Brain\Monkey;
+use Brain\Monkey\Functions;
 use FrankenPress\Cli\Apply\Restorer;
 use PHPUnit\Framework\TestCase;
 use ReflectionMethod;
@@ -21,12 +23,16 @@ final class CliRestorerApplyOptionsTest extends TestCase {
 	private string $snapshot_dir;
 
 	protected function setUp(): void {
+		parent::setUp();
+		Monkey\setUp();
 		$this->snapshot_dir = sys_get_temp_dir() . '/fp-apply-options-test-' . uniqid();
 		mkdir( $this->snapshot_dir, 0755, true );
 	}
 
 	protected function tearDown(): void {
 		$this->rmrf( $this->snapshot_dir );
+		Monkey\tearDown();
+		parent::tearDown();
 	}
 
 	public function test_applies_literal_option_value_when_no_page_ref(): void {
@@ -182,6 +188,37 @@ final class CliRestorerApplyOptionsTest extends TestCase {
 	/**
 	 * @param array<string, mixed> $payload
 	 */
+	public function test_flushes_rewrite_rules_after_options_applied(): void {
+		// permalink_structure landing without a rewrite-rules flush is
+		// the bug that 404'd every post permalink on freshly-installed
+		// sts/eoe pods. Confirm the flush call fires unconditionally
+		// at the end of apply_options — covers permalink-structure
+		// changes AND any future option that should invalidate
+		// route resolution.
+		$this->write_options(
+			array(
+				'options'    => array(
+					'permalink_structure' => '/%year%/%monthnum%/%day%/%postname%/',
+				),
+				'theme_mods' => array(),
+			)
+		);
+
+		$flush_calls = array();
+		Functions\when( 'flush_rewrite_rules' )->alias(
+			static function ( bool $hard ) use ( &$flush_calls ): void {
+				$flush_calls[] = $hard;
+			}
+		);
+
+		$writer      = static fn ( string $key, mixed $value, bool $autoload ): bool => true;
+		$page_finder = static fn (): ?int => null;
+
+		$this->invoke( $writer, $page_finder );
+
+		$this->assertSame( array( false ), $flush_calls, 'flush_rewrite_rules must fire exactly once with hard=false at the end of apply_options' );
+	}
+
 	private function write_options( array $payload ): void {
 		file_put_contents( $this->snapshot_dir . '/options.json', json_encode( $payload ) );
 	}
