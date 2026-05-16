@@ -4,7 +4,7 @@ Guidance for Claude Code (and other AI agents) when working in this repo.
 
 ## What this repo is
 
-The **must-use plugin** for the FrankenPress stack. **Four request-path
+The **must-use plugin** for the FrankenPress stack. **Five request-path
 components + one off-request-path CLI surface**, all runtime
 platform-housekeeping; anything else is **optional** and lives in a
 regular plugin (or a fork of this).
@@ -15,7 +15,8 @@ regular plugin (or a fork of this).
 | `FrankenPress\SouinInvalidator` | Connects directly to Redis and `DEL`s Souin's HTTP cache entries on `save_post`, `clean_post_cache`, comment status changes, theme switch, permalink change, global-option change. Bypasses cache-handler v0.16.0's broken HTTP invalidation APIs. |
 | `FrankenPress\SiteHealth` | Suppresses Site Health tests whose failure is intentional under the immutable-image lockdown (`background_updates`, FS-write probes, `plugin_theme_auto_updates`) and adds a passing FrankenPress-branded test that explains why those tests are gone. |
 | `FrankenPress\SMTPMailer` | Wires the global PHPMailer to send via SMTP when `FP_SMTP_HOST` is set. Without it, `wp_mail()` silently fails in the container (no MTA in the runtime image). |
-| `FrankenPress\Cli\Command` *(off the request path)* | Registers `wp fp snapshot` + `wp fp apply` WP-CLI subcommands. **Adapter-scoped, WXR-based, additive.** Snapshots capture only what the active adapter declares is its blast radius (the bundled `Fse` adapter covers FSE block-theme design state — templates, template parts, global styles, navigation, attachments, pages, posts, site-identity options) — user-generated content (orders, comments, accounts) is *never* in any snapshot. Apply uses WP's native WXR importer + `update_option` for scoped keys. Schema: `fp.snapshot/v3`. Only loads under `WP_CLI` — zero overhead on web requests. |
+| `FrankenPress\SnapshotExporter` | Captures site state (`fp.snapshot/v5` wire format) and uploads to a per-tenant S3 snapshot bucket on a daily wp-cron event + on-demand admin button under Tools → Snapshot Export. Gated by `FP_SNAPSHOT_BUCKET` env var — dormant (no hooks registered, no cron scheduled) when unset. Supplies the prod-side half of the `fp pull` designer flow; the capture itself reuses the existing `wp fp snapshot` machinery via `\FrankenPress\Cli\Snapshot\Factory`. |
+| `FrankenPress\Cli\Command` *(off the request path)* | Registers `wp fp snapshot` + `wp fp apply` WP-CLI subcommands. **Adapter-scoped, WXR-based, additive.** Snapshots capture only what the active adapter declares is its blast radius (the bundled `Fse` adapter covers FSE block-theme design state — templates, template parts, global styles, navigation, attachments, pages, posts, site-identity options) — user-generated content (orders, comments, accounts) is *never* in any snapshot. Apply uses WP's native WXR importer + `update_option` for scoped keys. Schema: `fp.snapshot/v5`. Only loads under `WP_CLI` — zero overhead on web requests. |
 
 Composer name: **`frankenpress/mu-plugin`** (PSR-4 namespace `FrankenPress\\`).
 Latest: `v0.10.0` (FSE-only pivot — drops the `The7` adapter, schema bumps to `fp.snapshot/v3`).
@@ -25,15 +26,17 @@ Public docs: **<https://docs.frankenpress.com/components/mu-plugin>**
 ## File layout
 
 - `mu-plugin.php` — root mu-plugin loader. WordPress only auto-loads PHP files at the root of `mu-plugins/`, not in subdirs. This file is what the consumer site's `roots/bedrock-autoloader` discovers.
-- `src/MuPlugin.php` — wires the two components into WordPress hooks.
+- `src/MuPlugin.php` — wires the components into WordPress hooks.
 - `src/S3UploadsBootstrap.php` — env → constants → `s3_uploads_s3_client_params` filter → require_once humanmade/s3-uploads. Refuses uploads via `wp_handle_upload_prefilter` when required env vars are missing.
 - `src/SouinInvalidator.php` — Redis client wrapper + WordPress hook callbacks. Computes Souin cache keys (`GET-<scheme>-<host>-<path>`) and DELs them.
+- `src/SnapshotExporter.php` — daily wp-cron event + admin button at Tools → Snapshot Export. Captures via the shared `Cli\Snapshot\Factory`, uploads via `Aws\S3\S3Client::putObject` (AWS SDK is a transitive dep through humanmade/s3-uploads, no new composer require). The admin button schedules a one-shot wp-cron event so the actual capture always runs inside the K8s wpcron CronJob's WP-CLI process (where `\WP_CLI::runcommand` is available).
+- `src/Cli/Snapshot/Factory.php` — single-source-of-truth wiring for `Capturer` and its dependency closures. Shared by `Cli\Command::snapshot()` and `SnapshotExporter::export_now()`.
 - `tests/` — PHPUnit unit tests with [Brain Monkey](https://github.com/Brain-WP/BrainMonkey) (WP function stubs) + Mockery (Redis client mocks). No real Redis or WP install needed.
 - `composer.json` — pulls `humanmade/s3-uploads ^3.0` as a transitive dep so consumer sites get S3 support without an extra `composer require`.
 
 ## Conventions
 
-- **Four request-path components is the contract.** Adding a fifth on the request path (URL fixer, object cache, metrics, WC log handler, etc.) requires explicit user approval. Sites that need those install them as regular plugins. Each component beyond the initial three (SiteHealth, SMTPMailer) landed with explicit user sign-off as platform-housekeeping for an existing platform decision, not a new feature. Off-request-path additions (e.g. `Cli\Command`, which only loads under `WP_CLI`) follow the same approval rule but don't count against the request-path baseline — they add zero overhead to normal page renders.
+- **Five request-path components is the current contract.** Adding a sixth on the request path (URL fixer, object cache, metrics, WC log handler, etc.) requires explicit user approval. Sites that need those install them as regular plugins. Each component beyond the initial three (SiteHealth, SMTPMailer, SnapshotExporter) landed with explicit user sign-off as platform-housekeeping for an existing platform decision, not a new feature. SnapshotExporter (5th) is gated on `FP_SNAPSHOT_BUCKET` — when unset, bootstrap is a side-effect-free no-op so non-opted-in sites pay zero overhead. Off-request-path additions (e.g. `Cli\Command`, which only loads under `WP_CLI`) follow the same approval rule but don't count against the request-path baseline — they add zero overhead to normal page renders.
 - **Errors are logged, never raised.** A broken Redis or missing s3-uploads makes the component a silent no-op (with `error_log`). The mu-plugin must never break WordPress request handling.
 - **Direct Redis DEL is the canonical invalidation path.** Souin's `PURGE`, POST-CRUD, and `/api.souin/*` admin endpoints are broken in cache-handler v0.16.0 — see `runtime/PHASE-0.md`. Don't add code that depends on them coming back.
 - **Hard-coded refusal beats silent fallback — in-cluster.** When the bootstrap is active and `FP_S3_BUCKET`/`KEY`/`SECRET` are missing, it registers `wp_handle_upload_prefilter` to **reject every upload**. In a Kubernetes deploy, silently writing to local disk is far worse than a hard fail. **Out-of-cluster the bootstrap auto-disables** (gated on `KUBERNETES_SERVICE_HOST`) so local dev gets ordinary local-disk uploads — the s3:// stream wrapper doesn't support every operation admin install flows need. Force-on for local S3 testing with `FP_S3_DISABLED=0`.
@@ -43,7 +46,7 @@ Public docs: **<https://docs.frankenpress.com/components/mu-plugin>**
 
 ## Don'ts
 
-- **Don't add a fifth request-path component without explicit user approval.** The slim baseline is a deliberate scope decision. Each addition beyond the initial three required sign-off; SMTPMailer (4th) and the off-request-path `Cli\Command` (5th, WP-CLI only) both landed under that pattern.
+- **Don't add a sixth request-path component without explicit user approval.** The slim baseline is a deliberate scope decision. Each addition beyond the initial three required sign-off; SMTPMailer (4th), SnapshotExporter (5th), and the off-request-path `Cli\Command` both landed under that pattern.
 - **Don't reintroduce QuerySplit, CDNOffloader, ContentFilter, NginxHelperActivator, MediaStorage, or BlobStore code from the old `wp-mu-plugin`.** They were intentionally dropped.
 - **Don't add MetricsCollector or WooCommerce log handlers here.** Those are optional integrations sites install themselves.
 - **Don't use `humanmade/s3-uploads`'s WP-CLI interface inline.** The bootstrap require_onces the plugin's main file but doesn't shell out — keep it that way for predictable load order.
