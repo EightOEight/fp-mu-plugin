@@ -54,6 +54,12 @@ final class MuPlugin {
 		( new SMTPMailer() )->bootstrap();
 		( new SnapshotExporter() )->bootstrap();
 
+		// Apply-time author remap. No-op when `FP_APPLY_REMAP_AUTHORS`
+		// env var is unset (the normal request path). Restorer sets it
+		// transiently before spawning `wp import`, and the subprocess
+		// inherits the parent's env so the filter is active there.
+		( new \FrankenPress\Cli\Apply\AuthorRemapper() )->register();
+
 		if ( defined( 'WP_CLI' ) && constant( 'WP_CLI' ) && class_exists( '\\WP_CLI' ) ) {
 			\WP_CLI::add_command( 'fp', \FrankenPress\Cli\Command::class );
 		}
